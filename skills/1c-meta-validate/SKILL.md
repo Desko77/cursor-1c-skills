@@ -11,17 +11,20 @@ description: "Валидация объекта метаданных 1С. Исп
 
 ```
 /meta-validate <ObjectPath>
+/meta-validate path1.xml|path2.xml|path3.xml — batch mode
 ```
 
 ## Параметры
 
 | Параметр | Обязательный | По умолчанию | Описание |
 |------------|:------------:|--------------|-------------------------------------------------|
-| ObjectPath | да | — | Путь к XML-файлу или каталогу объекта |
-| MaxErrors | нет | 30 | Остановиться после N ошибок |
+| ObjectPath | да | — | Путь к XML-файлу или каталогу объекта. Несколько путей через `\|` для batch |
+| MaxErrors | нет | 30 | Остановиться после N ошибок (per object) |
 | OutFile | нет | — | Записать результат в файл (UTF-8 BOM) |
 
 `ObjectPath` авторезолв: если указана директория — ищет `<dirName>/<dirName>.xml`.
+
+**Batch mode**: при нескольких путях через `|` каждый объект валидируется отдельно, в конце выводится сводка `=== Batch: N objects, X passed, Y failed ===`.
 
 ## Команда
 
@@ -89,6 +92,9 @@ Errors: 1, Warnings: 1
 
 # С записью в файл
 ... -ObjectPath Catalogs/Номенклатура.xml -OutFile result.txt
+
+# Batch: несколько объектов через |
+... -ObjectPath "Catalogs/Банки.xml|Documents/Заказ.xml|Enums/ВидДоговора.xml"
 ```
 
 ## Верификация

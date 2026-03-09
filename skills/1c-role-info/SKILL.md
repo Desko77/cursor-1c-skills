@@ -18,7 +18,7 @@ description: "Компактная сводка прав роли 1С из Right
 ## Запуск скрипта
 
 ```powershell
-powershell.exe -File skills/1c-role-info/scripts/role-info.ps1 -RightsPath <path> -OutFile <output.txt>
+powershell.exe -NoProfile -File skills/1c-role-info/scripts/role-info.ps1 -RightsPath <path> -OutFile <output.txt>
 ```
 
 ### Параметры
