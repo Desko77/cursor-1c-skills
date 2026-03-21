@@ -30,8 +30,6 @@ description: "Разобрать ERF-файл отчёта 1С в XML-исход
 Если `v8path` не задан — автоопределение: `Get-ChildItem "C:\Program Files\1cv8\*\bin\1cv8.exe" | Sort -Desc | Select -First 1`
 Если использованная база не зарегистрирована — после выполнения предложи добавить через `/db-list add`.
 
-Спецификация пакетного режима: `docs/build-spec.md`
-
 ## Команда
 
 Используй общий скрипт из epf-dump:
