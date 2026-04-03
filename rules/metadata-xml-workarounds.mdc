@@ -1,0 +1,49 @@
+---
+description: "XML-ошибки при генерации метаданных и форм 1С"
+globs: ["**/*.mdo", "**/Form.xml", "**/Form.form", "**/*.form"]
+alwaysApply: false
+---
+
+# Типичные XML-ошибки при генерации метаданных 1С
+
+## TabularSections (табличные части)
+
+У табличных частей НЕ должно быть секции `<standardAttributes>` с `LineNumber`. Удали её, если она появилась:
+
+```xml
+<!-- НЕПРАВИЛЬНО - удалить эту секцию -->
+<standardAttributes>
+  <dataHistory>Use</dataHistory>
+  <name>LineNumber</name>
+  <fillValue xsi:type="core:UndefinedValue"/>
+  <fullTextSearch>Use</fullTextSearch>
+  <minValue xsi:type="core:UndefinedValue"/>
+  <maxValue xsi:type="core:UndefinedValue"/>
+</standardAttributes>
+```
+
+## Группа Pages (Страницы)
+
+Тип extInfo - `PagesGroupExtInfo` (с буквой "s"), НЕ `PageGroupExtInfo`:
+
+```xml
+<!-- ПРАВИЛЬНО -->
+<type>Pages</type>
+<extInfo xsi:type="form:PagesGroupExtInfo">
+  <pagesRepresentation>Auto</pagesRepresentation>
+  <currentRowUse>Auto</currentRowUse>
+</extInfo>
+```
+
+## Группа Page (Страница)
+
+Обязательно добавлять `<enabled>true</enabled>`:
+
+```xml
+<type>Page</type>
+<enabled>true</enabled>
+```
+
+## UID/UUID
+
+Все UID и UUID новых объектов метаданных, реквизитов, табличных частей - уникальные. При добавлении метаданных - обязательно обновить `Configuration.mdo`.
