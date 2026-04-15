@@ -2,9 +2,9 @@
 
 Набор скилов, правил и команд для [Cursor IDE](https://cursor.com), ориентированных на разработку 1С:Предприятие.
 
-**80 скилов** для работы с конфигурациями, расширениями, обработками, формами, макетами, запросами, ролями, подсистемами, базами данных, веб-публикацией и веб-тестированием 1С.
+**83 скила** для работы с конфигурациями, расширениями, обработками, формами, макетами, запросами, ролями, подсистемами, базами данных, веб-публикацией и веб-тестированием 1С, а также справочник API ЗУП 3.1.
 
-**14 правил** (.mdc) — стандарты кода BSL, антипаттерны, оптимизация запросов, паттерны расширений, тестирование, ревью.
+**17 правил** (.mdc) - стандарты кода BSL, антипаттерны, оптимизация запросов, паттерны расширений, тестирование, ревью, выбор моделей, SDD-workflow.
 
 > Адаптация [claude-code-skills-1c](https://github.com/Desko77/claude-code-skills-1c) для Cursor IDE.
 
@@ -54,7 +54,7 @@ Copy-Item -Path commands\* -Destination .cursor\commands\ -Recurse -Force
 
 Скилы спроектированы по слоям — базовые (генерация XML) работают без платформы, продвинутые требуют 1С или MCP.
 
-## Скилы (80)
+## Скилы (83)
 
 ### Маршрутизатор
 
@@ -187,14 +187,17 @@ Copy-Item -Path commands\* -Destination .cursor\commands\ -Recurse -Force
 | Скил | Описание |
 |------|----------|
 | `1c-edt-tools` | Справочник инструментов EDT MCP |
+| `1c-naparnik` | Справочник инструментов 1С:Напарник (анализ кода, ИТС, документация) |
 | `1c-platform-docs` | Поиск по документации API платформы |
 | `1c-query-optimization` | Продвинутая оптимизация запросов |
 | `1c-help-manage` | Встроенная справка объектов 1С |
 | `composing-1c-queries` | Руководство по языку запросов 1С |
 | `v8unpack-cf` | Распаковка/сборка CF/CFE/EPF |
 | `img-grid-analysis` | Анализ изображений для макетов |
+| `md-to-docx` | Конвертация Markdown в DOCX |
 | `mermaid-diagrams` | Генерация диаграмм Mermaid |
 | `powershell-windows` | PowerShell на Windows |
+| `zup-hr-api-reference` | Справочник API 1С:ЗУП 3.1 (кадровый учет, физлица, стажи, договоры ГПХ, представления СКД) |
 
 ### Веб-публикация и тестирование (web-*)
 
@@ -206,7 +209,7 @@ Copy-Item -Path commands\* -Destination .cursor\commands\ -Recurse -Force
 | `1c-web-stop` | Остановка веб-сервера |
 | `1c-web-test` | Тестирование 1С через веб-клиент (автоматизация браузера) |
 
-## Правила (14)
+## Правила (17)
 
 | Файл | Описание |
 |------|----------|
@@ -216,6 +219,7 @@ Copy-Item -Path commands\* -Destination .cursor\commands\ -Recurse -Force
 | `async-methods-1c.mdc` | Асинхронные методы (Асинх/Ждать/Обещание) |
 | `1c-extension-patterns.mdc` | Паттерны расширений CFE: перехватчики, маркеры |
 | `form_module_rules.mdc` | Клиент-серверное разделение в модулях форм |
+| `1c-form-reserved-names.mdc` | Зарезервированные имена свойств элементов в модулях форм |
 | `forms_events.mdc` | Привязка обработчиков событий в Form.xml |
 | `code-review-checklist.mdc` | Чеклист ревью BSL-кода (Critical/High/Medium/Low) |
 | `code-exploration-guide.mdc` | Методология исследования кодовой базы 1С |
@@ -224,6 +228,8 @@ Copy-Item -Path commands\* -Destination .cursor\commands\ -Recurse -Force
 | `v8unpack-source-structure.mdc` | Структура исходников v8unpack |
 | `refactoring.mdc` | Правила рефакторинга 1С |
 | `routine_assignment_ext_processor.mdc` | Фоновые задания из внешней обработки через БСП |
+| `model-selection.mdc` | Стратегия выбора моделей: Opus/Sonnet/Haiku по типу задачи |
+| `sdd-workflow.mdc` | Specification-Driven Development: 9-фазный workflow разработки |
 
 ## Команды (2)
 
@@ -240,7 +246,7 @@ Copy-Item -Path commands\* -Destination .cursor\commands\ -Recurse -Force
 | Скилы frontmatter | `name`, `description`, `allowed-tools`, `argument-hint` | `name`, `description` |
 | Evals | `evals/evals.json` для тестирования | Не включены |
 | skill-creator | Включён (создание и тестирование скилов) | Не включён (привязан к Claude Code) |
-| Количество скилов | 81 | 80 |
+| Количество скилов | 84 | 83 |
 
 ## Синхронизация с исходным репо
 
