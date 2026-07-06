@@ -6,7 +6,7 @@
 
 Отдельный класс - справочники API прикладных конфигураций (см. раздел «Справочные и утилитарные»). Первый такой скил - `zup-hr-api-reference` для 1С:ЗУП 3.1.
 
-**29 правил** (.mdc) - стандарты кода BSL, антипаттерны, оптимизация запросов, паттерны расширений, генерация форм, требования EDT, БСП API и переиспользование БСП, права ролей, прямой запрос в отчётах, грабли экспорта EDT, безопасная запись BSL-модулей, Python-first интеграции, двухпроходный СКД, верификация работы агента, тестирование, ревью, выбор моделей, SDD-workflow.
+**29 правил** (.mdc) - стандарты кода BSL, антипаттерны, оптимизация запросов, паттерны расширений, генерация форм, требования EDT, БСП API и переиспользование БСП, права ролей, прямой запрос в отчётах, безопасная запись BSL-модулей, Python-first интеграции, двухпроходный СКД, верификация работы агента, тестирование, ревью, выбор моделей, SDD-workflow.
 
 > Адаптация [claude-code-skills-1c](https://github.com/Desko77/claude-code-skills-1c) для Cursor IDE.
 
@@ -256,7 +256,7 @@ Copy-Item -Path commands\* -Destination .cursor\commands\ -Recurse -Force
 | `code-review-checklist.mdc` | Чеклист ревью BSL-кода (Critical/High/Medium/Low) |
 | `code-exploration-guide.mdc` | Методология исследования кодовой базы 1С |
 | `testing-patterns.mdc` | Паттерны тестирования: YaXUnit, Vanessa Automation |
-| `1c-mdo-integrity.mdc` | Целостность MDO-файлов: UUID, ссылки, ловушки типов String/Number |
+| `1c-mdo-integrity.mdc` | Целостность MDO-файлов: UUID, ссылки, ограничения типов String/Number |
 | `external-data-source-mdo.mdc` | Внешние источники данных (ВИД) в формате EDT |
 | `v8unpack-source-structure.mdc` | Структура исходников v8unpack |
 | `refactoring.mdc` | Правила рефакторинга 1С |
@@ -266,7 +266,7 @@ Copy-Item -Path commands\* -Destination .cursor\commands\ -Recurse -Force
 | `sdd-workflow.mdc` | Specification-Driven Development: 9-фазный workflow разработки |
 | `1c-role-rights.mdc` | Права ролей 1С: права на объекты, RLS, наследование |
 | `1c-report-direct-query.mdc` | Прямой запрос в отчётах (СКД) без схемы компоновки |
-| `edt-zip-export-pitfalls.mdc` | Грабли инкрементального экспорта конфигурации из EDT в ИБ |
+| `edt-zip-export-pitfalls.mdc` | Ограничения инкрементального экспорта конфигурации из EDT в ИБ |
 | `agent-verification-patterns.mdc` | Паттерны проверки результата работы агента (reconciliation loop) |
 | `bsl-ssl.mdc` | Переиспользование БСП, разметка правок типовых модулей, устаревшие объекты |
 | `edt-bsl-write-safety.mdc` | Безопасная запись BSL-модулей через EDT MCP |
