@@ -143,6 +143,10 @@ if ($raw.Length -le 32) {
 $bomOffset = 0
 if ($raw.Length -ge 3 -and $raw[0] -eq 0xEF -and $raw[1] -eq 0xBB -and $raw[2] -eq 0xBF) { $bomOffset = 3 }
 $text = [System.Text.Encoding]::UTF8.GetString($raw, $bomOffset, $raw.Length - $bomOffset)
+if ($text.IndexOf([char]0xFFFD) -ge 0) {
+    Write-Host "Error: неизвестный формат ParentConfigurations.bin" -ForegroundColor Red
+    exit 1
+}
 
 $m = [regex]::Match($text, "^\{6,(\d+),(\d+),")
 if (-not $m.Success) {
@@ -171,7 +175,7 @@ if ($Get) {
     }
     if ($elemUuid) {
         $u = [regex]::Escape($elemUuid.ToLower())
-        $found = [regex]::Matches($text, "([0-2]),0,$u")
+        $found = [regex]::Matches($text, "(?<![0-9a-f-])([0-2]),0,$u")
         if ($found.Count -gt 0) {
             $vals = @($found | ForEach-Object { $_.Groups[1].Value })
             $eff = ($vals | Sort-Object)[0]
@@ -195,7 +199,7 @@ if ($Capability) {
     $text = [regex]::new("^(\{6,)\d+(,)").Replace($text, "`${1}$target`${2}", 1)
     # заголовок каждого блока поставщика: guidA,X,guidVendor - X следует за G
     $text = [regex]::Replace($text, "([0-9a-f-]{36}),\d+,([0-9a-f-]{36})", "`${1},$target,`${2}")
-    $text = [regex]::Replace($text, "[0-2],0,([0-9a-f-]{36})", "$target,0,`${1}")
+    $text = [regex]::Replace($text, "(?<![0-9a-f-])[0-2],0,([0-9a-f-]{36})", "$target,0,`${1}")
     Save-Bin $binPath $text
     if ($Capability -eq "on") {
         Write-Host "Возможность изменения конфигурации ВКЛЮЧЕНА. Все объекты поставщика - на замке." -ForegroundColor Green
@@ -218,13 +222,19 @@ if (-not $elemUuid) {
 }
 $uLow = $elemUuid.ToLower()
 $u = [regex]::Escape($uLow)
-$n = [regex]::Matches($text, "[0-2],0,$u").Count
+$foundSet = [regex]::Matches($text, "(?<![0-9a-f-])([0-2]),0,$u")
+$n = $foundSet.Count
 if ($n -eq 0) {
     Write-Host "Объект не найден в поддержке (свое добавление) - переключать нечего."
     exit 0
 }
 $newF1 = $f1ByState[$Set]
-$text = [regex]::Replace($text, "[0-2],0,$u", "$newF1,0,$uLow")
+$setVals = @($foundSet | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+if ($setVals.Count -eq 1 -and $setVals[0] -eq $newF1) {
+    Write-Host "Объект уже в целевом состоянии - изменения не требуются."
+    exit 0
+}
+$text = [regex]::Replace($text, "(?<![0-9a-f-])[0-2],0,$u", "$newF1,0,$uLow")
 Save-Bin $binPath $text
 Write-Host ("Объект {0} -> {1}" -f $elemUuid, $stateByF1[$newF1]) -ForegroundColor Green
 Write-Host "Изменено записей: $n"

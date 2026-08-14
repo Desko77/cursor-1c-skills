@@ -637,6 +637,7 @@ def parse_element(node):
 def parse_attribute(node):
     name = node.get("name", "")
     todos = []
+    check_extra_attrs(node, name, todos)
     title = None
     type_str = None
     main = False
@@ -724,6 +725,7 @@ def parse_attribute(node):
 def parse_parameter(node):
     name = node.get("name", "")
     todos = []
+    check_extra_attrs(node, name, todos)
     p = OrderedDict()
     p["name"] = name
     for ch in node:
@@ -745,6 +747,7 @@ def parse_parameter(node):
 def parse_command(node):
     name = node.get("name", "")
     todos = []
+    check_extra_attrs(node, name, todos)
     action = None
     title = None
     shortcut = None

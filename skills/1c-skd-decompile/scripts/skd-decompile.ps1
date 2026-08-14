@@ -372,6 +372,15 @@ function Build-DataSet($el, $defaultSource) {
 		if ($label -ceq '') { $label = '(нет xsi:type)' }
 		Add-Todo $node ('неподдержанный тип набора данных: ' + $label)
 	}
+	$handled = @('name', 'dataSource', 'field')
+	if ($xt -ceq 'DataSetQuery') { $handled += @('query', 'autoFillFields') }
+	elseif ($xt -ceq 'DataSetObject') { $handled += 'objectName' }
+	elseif ($xt -ceq 'DataSetUnion') { $handled += @('item', 'dataSet') }
+	foreach ($c in $el.ChildNodes) {
+		if ($c.NodeType -eq 'Element' -and $handled -cnotcontains $c.LocalName) {
+			Add-Todo $node ('элемент набора данных не поддержан: ' + $c.LocalName)
+		}
+	}
 	$fields = New-Object System.Collections.Generic.List[object]
 	foreach ($f in (Get-Kids $el 'field')) { [void]$fields.Add((Build-Field $f)) }
 	if ($fields.Count -gt 0) { $node['fields'] = $fields }

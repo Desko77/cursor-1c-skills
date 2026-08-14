@@ -231,8 +231,12 @@ if ($AutoStart) {
         }
     } elseif ($null -ne $result) {
         Write-Warning "Автостарт не удался: $result"
+        Write-Warning "Процесс 1С оставлен запущенным (PID $($process.Id))."
+        exit 1
     } else {
         Write-Warning "Сигнал готовности не получен за $AutoStartTimeoutSec сек. Проверь: 1) сохранен ли в обработке режим 'Встроенный сервер'; 2) свежесть timestamp; 3) форму обработки в 1С."
+        Write-Warning "Процесс 1С оставлен запущенным (PID $($process.Id))."
+        exit 1
     }
 }
 elseif ($WaitForReady) {
@@ -262,6 +266,8 @@ elseif ($WaitForReady) {
         Write-Host "HTTP-сервер готов на $healthUrl" -ForegroundColor Green
     } else {
         Write-Warning "HTTP-сервер не поднялся за $timeout секунд. Проверь форму обработки в 1С: вкладка 'Подключение' -> 'Встроенный сервер' -> 'Запустить сервер'."
+        Write-Warning "Процесс 1С оставлен запущенным (PID $($process.Id))."
+        exit 1
     }
 }
 

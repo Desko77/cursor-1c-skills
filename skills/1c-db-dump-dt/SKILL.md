@@ -58,6 +58,7 @@ powershell.exe -NoProfile -File skills/1c-db-dump-dt/scripts/db-dump-dt.ps1 <п�
 |-----|----------|
 | 0 | Успешно |
 | 1 | Ошибка (см. лог) |
+| 2 | Неверные аргументы (python-версия, argparse) |
 
 ## После выполнения
 

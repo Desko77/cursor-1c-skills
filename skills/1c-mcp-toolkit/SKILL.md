@@ -35,12 +35,12 @@ REST API на `http://localhost:6003/api/*` через обработку `MCP_T
  done
  ```
 
-3. **Ничего не живо - запустить самому.** `scripts/start-1c.ps1 -AutoStart -WaitForReady`,
+3. **Ничего не живо - запустить самому.** `scripts/start-1c.ps1 -AutoStart`,
  если параметры базы (платформа, путь, пользователь) известны из карты/памяти.
  Спрашивать пользователя только при неизвестных параметрах.
 4. **Полный цикл - самостоятельно.** Обновить ИБ и проверить данные = один заход без
  ручного handoff: `stop-1c.ps1` (или execute_code ЗавершитьРаботуСистемы) ->
- `update_database` (EDT MCP) -> `start-1c.ps1 -AutoStart -WaitForReady` -> health ->
+ `update_database` (EDT MCP) -> `start-1c.ps1 -AutoStart` -> health ->
  запросы. Пользователя дергать только если неизвестны платформа/база/учетка ИЛИ он
  явно просил паузу (демо, живой показ).
 5. **Ошибка «функция не определена» / connection refused** - чаще всего toolkit просто
@@ -81,7 +81,7 @@ EPF лежит прямо в скилле:
 ```powershell
 & "$HOME\.claude\skills\1c-mcp-toolkit\scripts\start-1c.ps1" `
  -Platform "8.3.27.2074" `
- -Database "E:\1C\MyDatabase" `
+ -Database "C:\Bases\MyDB" `
  -User "Admin" `
  -Password "<пароль>"
 ```
@@ -127,11 +127,11 @@ curl -sS -X POST "http://localhost:6003/api/execute_code" \
 
 | Задача | Лучше использовать |
 |--------|--------------------|
-| Чтение BSL-кода, навигация по модулям | `mcp__1c-edt__read_method_source`, `get_module_structure` |
-| Валидация запроса до запуска | `mcp__1c-edt__validate_query` |
-| Метаданные в режиме разработки (XML) | `mcp__1c-edt__get_metadata_objects/get_metadata_details` |
-| Семантический поиск по коду | `mcp__1c-edt__search_in_code`, `find_references` |
-| Запрос без живой БД (только EDT) | `mcp__1c-edt__execute_query` (если доступен) |
+| Чтение BSL-кода, навигация по модулям | `mcp__ai-edt__read_method_source`, `get_module_structure` |
+| Валидация запроса до запуска | `mcp__ai-edt__validate_query` |
+| Метаданные в режиме разработки (XML) | `mcp__ai-edt__get_metadata_objects/get_metadata_details` |
+| Семантический поиск по коду | `mcp__ai-edt__search_in_code`, `find_references` |
+| Запрос без живой БД (только EDT) | `mcp__ai-edt__execute_query` (если доступен) |
 | Проверка качества BSL | `mcp__1c-naparnik__ask_1c_ai` |
 
 MCP Toolkit заточен под **живую запущенную базу**, EDT - под dev-режим с
@@ -359,6 +359,21 @@ curl ... -d '{"code":"Запрос.Текст = \"ВЫБРАТЬ Ссылка И
 
 ## Типичные паттерны
 
+### Открытие формы в сеансе 1С (execution_context=client)
+
+Отдельного эндпоинта `open_form` НЕТ (проверено по ROCTUP, 27.07.2026: 12 эндпоинтов без
+него). Форму открывает `ОткрытьФорму(...)` в КЛИЕНТСКОМ контексте - проверено рабочим:
+
+```sh
+curl -sS -X POST "http://localhost:6003/api/execute_code" -d '{"code":"ОткрытьФорму(\"Документ.Х.ФормаСписка\"); Результат=\"OK\";","execution_context":"client"}'
+```
+
+Форма откроется в окне ЗАПУЩЕННОГО сеанса 1С (не headless - пользователь видит ее на
+экране). Список: `.ФормаСписка` (или без указания формы - автоформа списка); объект:
+`ОткрытьФорму("Документ.Х.ФормаОбъекта", Новый Структура("Ключ", СсылкаНаОбъект))`.
+Для АГЕНТА картинку формы дает EDT MCP `get_form_screenshot` (сам toolkit возвращает
+только текст/данные, не изображение).
+
 ### Прямой вызов экспортной функции модуля выгрузки
 
 ```sh
@@ -418,7 +433,7 @@ curl -sS -X POST "http://localhost:6003/api/execute_query" \
 
 Типичный цикл "правка кода - проверка в живой базе":
 
-1. Внести изменения в код в EDT, запустить `mcp__1c-edt__validate_query` для
+1. Внести изменения в код в EDT, запустить `mcp__ai-edt__validate_query` для
  запросов
 2. Закрыть 1С через MCP Toolkit:
  ```sh
@@ -426,7 +441,7 @@ curl -sS -X POST "http://localhost:6003/api/execute_query" \
  -H "Content-Type: application/json" \
  -d '{"code":"ЗавершитьРаботуСистемы(Ложь, Ложь);","execution_context":"client"}'
  ```
-3. Обновить конфигурацию: `mcp__1c-edt__update_database`
+3. Обновить конфигурацию: `mcp__ai-edt__update_database`
 4. Запустить 1С с MCP Toolkit: `scripts/start-1c.ps1 ...`
 5. Дождаться поднятия: polling `curl http://localhost:6003/health` до 200
 6. Прогнать тестовые запросы через `execute_query` / `execute_code`

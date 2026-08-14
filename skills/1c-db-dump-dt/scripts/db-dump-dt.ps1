@@ -118,7 +118,10 @@ try {
     $arguments += "/DisableStartupDialogs"
 
     # --- Execute ---
-    Write-Host "Running: 1cv8.exe $($arguments -join ' ')"
+    $display = ($arguments | ForEach-Object {
+        if ($_ -like '/P"*') { '/P"***"' } elseif ($_ -like '/UC"*') { '/UC"***"' } else { $_ }
+    }) -join ' '
+    Write-Host "Running: 1cv8.exe $display"
     $process = Start-Process -FilePath $V8Path -ArgumentList $arguments -NoNewWindow -Wait -PassThru
     $exitCode = $process.ExitCode
 

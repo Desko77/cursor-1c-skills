@@ -85,7 +85,10 @@ def read_bin(bin_path):
         return None
     if raw.startswith(BOM):
         raw = raw[3:]
-    return raw.decode("utf-8")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
 
 
 def save_bin(bin_path, text):
@@ -146,7 +149,7 @@ def main():
             print(f"  {i}. {name} ({vendor}), версия {ver}, записей: {mm.group(6)}")
         if elem_uuid:
             u = re.escape(elem_uuid.lower())
-            found = re.findall(r"([0-2]),0," + u, text)
+            found = re.findall(r"(?<![0-9a-f-])([0-2]),0," + u, text)
             if found:
                 eff = min(found)
                 note = f" (по вхождениям: {','.join(found)})" if len(set(found)) > 1 else ""
@@ -163,7 +166,7 @@ def main():
         text = re.sub(r"^(\{6,)\d+(,)", r"\g<1>" + target + r"\g<2>", text)
         # заголовок каждого блока поставщика: guidA,X,guidVendor - X следует за G
         text = re.sub(r"([0-9a-f-]{36}),\d+,([0-9a-f-]{36})", r"\1," + target + r",\2", text)
-        text = re.sub(r"[0-2],0,([0-9a-f-]{36})", target + r",0,\1", text)
+        text = re.sub(r"(?<![0-9a-f-])[0-2],0,([0-9a-f-]{36})", target + r",0,\1", text)
         save_bin(bin_path, text)
         if args.Capability == "on":
             print("Возможность изменения конфигурации ВКЛЮЧЕНА. Все объекты поставщика - на замке.")
@@ -182,12 +185,16 @@ def main():
         sys.exit(1)
     u_low = elem_uuid.lower()
     u = re.escape(u_low)
-    n = len(re.findall(r"[0-2],0," + u, text))
+    vals = re.findall(r"(?<![0-9a-f-])([0-2]),0," + u, text)
+    n = len(vals)
     if n == 0:
         print("Объект не найден в поддержке (свое добавление) - переключать нечего.")
         sys.exit(0)
     new_f1 = F1_BY_STATE[args.Set]
-    text = re.sub(r"[0-2],0," + u, new_f1 + ",0," + u_low, text)
+    if set(vals) == {new_f1}:
+        print("Объект уже в целевом состоянии - изменения не требуются.")
+        sys.exit(0)
+    text = re.sub(r"(?<![0-9a-f-])[0-2],0," + u, new_f1 + ",0," + u_low, text)
     save_bin(bin_path, text)
     print(f"Объект {elem_uuid} -> {STATE_BY_F1[new_f1]}")
     print(f"Изменено записей: {n}")

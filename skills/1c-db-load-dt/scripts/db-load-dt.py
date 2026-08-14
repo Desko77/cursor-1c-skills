@@ -91,7 +91,11 @@ def main():
         arguments.append("/DisableStartupDialogs")
 
         # --- Execute ---
-        print(f"Running: 1cv8.exe {' '.join(arguments)}")
+        display = " ".join(
+            "/P***" if a.startswith("/P") else ("/UC***" if a.startswith("/UC") else a)
+            for a in arguments
+        )
+        print(f"Running: 1cv8.exe {display}")
         result = subprocess.run(
             [v8path] + arguments,
             capture_output=True,

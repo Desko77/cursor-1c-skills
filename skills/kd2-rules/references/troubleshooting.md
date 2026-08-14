@@ -33,7 +33,7 @@ Python `urllib.request` на примитивном HTTP-сервере toolkit 
 Перед выводом «функция недоступна в КД» проверить, что MCP toolkit запущен:
 
 ```bash
-curl -s --noproxy localhost http://localhost:7003/  # должен вернуть статус
+curl -s --noproxy localhost http://localhost:7003/health  # должен вернуть статус
 ```
 
 Если toolkit не отвечает (`Connection refused`, пустой ответ, тайм-аут) или возвращает

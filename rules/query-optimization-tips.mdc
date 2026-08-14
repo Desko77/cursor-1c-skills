@@ -236,6 +236,6 @@ alwaysApply: false
 
 После написания или оптимизации запроса проверить корректность:
 
-- `validate_query` (1c-edt) — проверка синтаксиса и семантики запроса в контексте проекта
+- `validate_query` (ai-edt) — проверка синтаксиса и семантики запроса в контексте проекта
 - `validate_query` с `dcsMode=true` — для запросов СКД
-- `check_syntax` (1c-syntax-checker-mcp) — быстрая проверка синтаксиса без EDT
+- `syntaxcheck` (1c-syntax-checker-mcp) — быстрая проверка синтаксиса без EDT

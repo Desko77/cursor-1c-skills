@@ -158,7 +158,11 @@ function Convert-Scalar([string]$text) {
 	$t = $text.Trim()
 	if ($t -eq "true") { return $true }
 	if ($t -eq "false") { return $false }
-	if ($t -match '^-?\d+$') { return [long]$t }
+	if ($t -match '^-?\d+$') {
+		$parsed = [long]0
+		if ([long]::TryParse($t, [ref]$parsed)) { return $parsed }
+		return $t
+	}
 	return $t
 }
 
@@ -585,6 +589,7 @@ function Read-Element($node) {
 function Read-Attribute($node) {
 	$name = $node.GetAttribute("name")
 	$todos = New-Object System.Collections.ArrayList
+	Test-ExtraAttrs $node $name $todos
 	$title = $null
 	$typeStr = $null
 	$main = $false
@@ -680,6 +685,7 @@ function Read-Attribute($node) {
 function Read-Parameter($node) {
 	$name = $node.GetAttribute("name")
 	$todos = New-Object System.Collections.ArrayList
+	Test-ExtraAttrs $node $name $todos
 	$p = [ordered]@{}
 	$p["name"] = $name
 	foreach ($ch in (Get-ElemChildren $node)) {
@@ -702,6 +708,7 @@ function Read-Parameter($node) {
 function Read-Command($node) {
 	$name = $node.GetAttribute("name")
 	$todos = New-Object System.Collections.ArrayList
+	Test-ExtraAttrs $node $name $todos
 	$action = $null
 	$title = $null
 	$shortcut = $null
@@ -780,7 +787,7 @@ function ConvertTo-JsonText($value, [string]$indent) {
 
 # --- Main ---
 
-if (-not (Test-Path -LiteralPath $InputFile)) {
+if (-not (Test-Path -LiteralPath $InputFile -PathType Leaf)) {
 	[Console]::Error.WriteLine("File not found: " + $InputFile)
 	exit 1
 }
@@ -893,7 +900,7 @@ foreach ($ch in (Get-ElemChildren $root)) {
 		$children = Get-ElemChildren $ch
 		if ($children.Count -eq 0) {
 			if ($PROP_REVERSE.ContainsKey($ln)) { $propKey = $PROP_REVERSE[$ln] }
-			else { $propKey = $ln.Substring(0, 1).ToLower() + $ln.Substring(1) }
+			else { $propKey = $ln.Substring(0, 1).ToLowerInvariant() + $ln.Substring(1) }
 			$properties[$propKey] = Convert-Scalar (Get-NodeText $ch)
 		}
 		else {

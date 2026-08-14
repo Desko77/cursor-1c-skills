@@ -52,6 +52,8 @@ def local(tag):
 
 
 def kids(elem, name):
+    if elem is None:
+        return []
     return [c for c in elem if local(c.tag) == name]
 
 
@@ -342,6 +344,17 @@ def build_data_set(el, default_source):
         node['items'] = items
     else:
         add_todo(node, 'неподдержанный тип набора данных: ' + (xt or '(нет xsi:type)'))
+    handled = {'name', 'dataSource', 'field'}
+    if xt == 'DataSetQuery':
+        handled |= {'query', 'autoFillFields'}
+    elif xt == 'DataSetObject':
+        handled.add('objectName')
+    elif xt == 'DataSetUnion':
+        handled |= {'item', 'dataSet'}
+    for c in el:
+        ln = local(c.tag)
+        if ln not in handled:
+            add_todo(node, 'элемент набора данных не поддержан: ' + ln)
     fields = [build_field(f) for f in kids(el, 'field')]
     if fields:
         node['fields'] = fields
@@ -1061,11 +1074,11 @@ def build_structure_item(el):
         if cols:
             node['columns'] = cols
         handled = {'name', 'row', 'column'}
-        apply_structure_extras(el, node, handled)
         for extra in ('selection', 'filter', 'conditionalAppearance', 'outputParameters'):
             if kid(el, extra) is not None:
                 add_todo(node, 'таблица структуры: ' + extra + ' на уровне таблицы не поддержан')
                 handled.add(extra)
+        apply_structure_extras(el, node, handled)
         return node
     if xt == 'StructureItemChart':
         node = {'type': 'chart'}
