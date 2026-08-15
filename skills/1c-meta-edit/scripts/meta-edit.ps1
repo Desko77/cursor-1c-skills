@@ -2371,6 +2371,10 @@ if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) {
 	$text = $text.Substring(1)
 }
 $text = $text.Replace('encoding="utf-8"', 'encoding="UTF-8"')
+# Пустой элемент: XmlWriter отдает `<a />`, Конфигуратор пишет `<a/>`. Внутри
+# CDATA/комментария или значения атрибута ` />` может быть содержимым,
+# поэтому они идут первыми ветками альтернации и возвращаются как есть.
+$text = [regex]::Replace($text, '(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|<([A-Za-z0-9_:.\-]+)((?:\s+[A-Za-z0-9_:.\-]+="[^"]*")*)\s+/>', { param($m) if ($m.Groups[1].Success) { '<' + $m.Groups[1].Value + $m.Groups[2].Value + '/>' } else { $m.Value } })
 
 # Write with BOM
 $utf8Bom = New-Object System.Text.UTF8Encoding($true)

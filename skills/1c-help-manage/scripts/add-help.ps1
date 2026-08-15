@@ -124,6 +124,13 @@ if (Test-Path $formsDir) {
 				$xmlDoc.Save($writer)
 				$writer.Close()
 				$stream.Close()
+				# Пустой элемент: XmlWriter отдает `<a />`, Конфигуратор пишет `<a/>`. Внутри
+				# CDATA/комментария или значения атрибута ` />` может быть содержимым,
+				# поэтому они идут первыми ветками альтернации и возвращаются как есть.
+				$tightPath = $formMeta.FullName
+				$tightText = [System.IO.File]::ReadAllText($tightPath, [System.Text.Encoding]::UTF8)
+				$tightText = [regex]::Replace($tightText, '(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|<([A-Za-z0-9_:.\-]+)((?:\s+[A-Za-z0-9_:.\-]+="[^"]*")*)\s+/>', { param($m) if ($m.Groups[1].Success) { '<' + $m.Groups[1].Value + $m.Groups[2].Value + '/>' } else { $m.Value } })
+				[System.IO.File]::WriteAllText($tightPath, $tightText, (New-Object System.Text.UTF8Encoding($true)))
 
 				Write-Host "     IncludeHelpInContents добавлен: $($formMeta.Name)"
 			}

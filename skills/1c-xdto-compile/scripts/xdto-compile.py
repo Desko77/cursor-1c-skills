@@ -1116,6 +1116,11 @@ if os.path.exists(config_xml):
             else:
                 new_elem.tail = child_objects.text
             data = etree.tostring(cfg_doc, xml_declaration=True, encoding="UTF-8")
+            # Пустой элемент: ElementTree отдает `<a />`, Конфигуратор пишет `<a/>`. Внутри
+            # CDATA/комментария или значения атрибута ` />` может быть содержимым, поэтому ветками
+            # альтернации и возвращаются как есть.
+            data = re.sub(rb'(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|(?<=\S) />',
+                            lambda m: b'/>' if m.group(0) == b' />' else m.group(0), data)
             # lxml пишет декларацию в ОДИНАРНЫХ кавычках, платформа и PS-порт — в двойных.
             data = data.replace(b"<?xml version='1.0' encoding='UTF-8'?>",
                                 b'<?xml version="1.0" encoding="UTF-8"?>')

@@ -17,6 +17,31 @@ param(
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# --- XML save in the form the platform writes ---
+
+function Save-XmlDocumentTight {
+	param([System.Xml.XmlDocument]$Document, [string]$Path)
+	$settings = New-Object System.Xml.XmlWriterSettings
+	$settings.Encoding = New-Object System.Text.UTF8Encoding($true)
+	$settings.Indent = $false
+	$settings.NewLineHandling = [System.Xml.NewLineHandling]::None
+
+	$mem = New-Object System.IO.MemoryStream
+	$writer = [System.Xml.XmlWriter]::Create($mem, $settings)
+	$Document.Save($writer)
+	$writer.Flush(); $writer.Close()
+	$text = [System.Text.Encoding]::UTF8.GetString($mem.ToArray())
+	$mem.Close()
+
+	if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
+	$text = $text.Replace('encoding="utf-8"', 'encoding="UTF-8"')
+	# Пустой элемент: XmlWriter отдает `<a />`, Конфигуратор пишет `<a/>`. Внутри
+	# CDATA/комментария или значения атрибута ` />` может быть содержимым,
+	# поэтому они идут первыми ветками альтернации и возвращаются как есть.
+	$text = [regex]::Replace($text, '(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|<([A-Za-z0-9_:.\-]+)((?:\s+[A-Za-z0-9_:.\-]+="[^"]*")*)\s+/>', { param($m) if ($m.Groups[1].Success) { '<' + $m.Groups[1].Value + $m.Groups[2].Value + '/>' } else { $m.Value } })
+	[System.IO.File]::WriteAllText($Path, $text, (New-Object System.Text.UTF8Encoding($true)))
+}
+
 # --- Type → plural directory mapping ---
 
 $typePluralMap = @{
@@ -358,10 +383,7 @@ if (-not $cfgNode) {
 
 	# Save Configuration.xml
 	if ($actions -gt 0 -and -not $DryRun) {
-		$enc = New-Object System.Text.UTF8Encoding $true
-		$sw = New-Object System.IO.StreamWriter($configXml, $false, $enc)
-		$xmlDoc.Save($sw)
-		$sw.Close()
+		Save-XmlDocumentTight -Document $xmlDoc -Path $configXml
 		Write-Host "[OK]    Configuration.xml saved"
 	}
 }
@@ -424,10 +446,7 @@ function Remove-FromSubsystems {
 		}
 
 		if ($modified -and -not $DryRun) {
-			$enc = New-Object System.Text.UTF8Encoding $true
-			$sw = New-Object System.IO.StreamWriter($xmlFile.FullName, $false, $enc)
-			$ssDoc.Save($sw)
-			$sw.Close()
+			Save-XmlDocumentTight -Document $ssDoc -Path $xmlFile.FullName
 		}
 
 		# Recurse into child subsystems

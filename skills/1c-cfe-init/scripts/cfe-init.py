@@ -6,7 +6,12 @@ import sys, os, argparse, uuid
 from xml.etree import ElementTree as ET
 
 def esc_xml(s):
-    return s.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;').replace('"','&quot;')
+    """Экранируются только три символа, ломающие разбор.
+
+    Кавычки и апострофы платформа внутри содержимого элемента не экранирует, и лишнее
+    экранирование дало бы расхождение с первой же выгрузкой Конфигуратора.
+    """
+    return s.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
 
 def new_uuid():
     return str(uuid.uuid4())
@@ -120,8 +125,10 @@ def main():
     if synonym:
         synonym_xml = f"\r\n\t\t\t\t<v8:item>\r\n\t\t\t\t\t<v8:lang>ru</v8:lang>\r\n\t\t\t\t\t<v8:content>{esc_xml(synonym)}</v8:content>\r\n\t\t\t\t</v8:item>\r\n\t\t\t"
 
-    vendor_xml = esc_xml(vendor) if vendor else ""
-    version_xml = esc_xml(version) if version else ""
+    # Незаполненное свойство платформа пишет самозакрывающимся тегом, а не пустой парой,
+    # иначе первая же выгрузка из Конфигуратора даст расхождение на ровном месте.
+    vendor_xml = f"<Vendor>{esc_xml(vendor)}</Vendor>" if vendor else "<Vendor/>"
+    version_xml = f"<Version>{esc_xml(version)}</Version>" if version else "<Version/>"
 
     # --- Role name ---
     role_name = f"{name_prefix}ОсновнаяРоль"
@@ -174,8 +181,8 @@ def main():
 \t\t\t</UsePurposes>
 \t\t\t<ScriptVariant>Russian</ScriptVariant>
 \t\t\t<DefaultRoles>{default_roles_xml}</DefaultRoles>
-\t\t\t<Vendor>{vendor_xml}</Vendor>
-\t\t\t<Version>{version_xml}</Version>
+\t\t\t{vendor_xml}
+\t\t\t{version_xml}
 \t\t\t<DefaultLanguage>Language.Русский</DefaultLanguage>
 \t\t\t<BriefInformation/>
 \t\t\t<DetailedInformation/>

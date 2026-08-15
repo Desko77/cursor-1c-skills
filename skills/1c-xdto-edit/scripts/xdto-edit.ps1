@@ -297,9 +297,9 @@ function Edit-Metadata([string]$field, [string]$newValue) {
 	if ($mdText.Length -gt 0 -and $mdText[0] -eq [char]0xFEFF) { $mdText = $mdText.Substring(1) }
 	$mdText = $mdText.Replace('encoding="utf-8"', 'encoding="UTF-8"')
 	# Пустой элемент: XmlWriter отдаёт `<a />`, Конфигуратор пишет `<a/>`. Внутри
-	# CDATA/комментария ` />` может быть содержимым (там `>` не экранируется),
+	# CDATA/комментария или значения атрибута ` />` может быть содержимым,
 	# поэтому они идут первыми ветками альтернации и возвращаются как есть.
-	$mdText = [regex]::Replace($mdText, '(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|(?<=\S) />', { param($m) if ($m.Value -eq ' />') { '/>' } else { $m.Value } })
+	$mdText = [regex]::Replace($mdText, '(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|<([A-Za-z0-9_:.\-]+)((?:\s+[A-Za-z0-9_:.\-]+="[^"]*")*)\s+/>', { param($m) if ($m.Groups[1].Success) { '<' + $m.Groups[1].Value + $m.Groups[2].Value + '/>' } else { $m.Value } })
 	# Целевой перевод строки: стиль файла-назначения — правка наследует его (#44/#46/#47),
 	# новый файл получает канон выгрузки CRLF. Зеркало _detect_xml_style в py-порту.
 	$targetEol = if ((Test-Path -LiteralPath $mdFile) -and ([System.IO.File]::ReadAllText($mdFile) -notmatch "`r`n")) { "`n" } else { "`r`n" }
@@ -341,10 +341,11 @@ function Rename-Package([string]$newName) {
 			$mem.Close()
 			if ($cfgText.Length -gt 0 -and $cfgText[0] -eq [char]0xFEFF) { $cfgText = $cfgText.Substring(1) }
 			$cfgText = $cfgText.Replace('encoding="utf-8"', 'encoding="UTF-8"')
+			$cfgText = [regex]::Replace($cfgText, '(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|<([A-Za-z0-9_:.\-]+)((?:\s+[A-Za-z0-9_:.\-]+="[^"]*")*)\s+/>', { param($m) if ($m.Groups[1].Success) { '<' + $m.Groups[1].Value + $m.Groups[2].Value + '/>' } else { $m.Value } })
 			# Пустой элемент: XmlWriter отдаёт `<a />`, Конфигуратор пишет `<a/>`. Внутри
-			# CDATA/комментария ` />` может быть содержимым (там `>` не экранируется),
+			# CDATA/комментария или значения атрибута ` />` может быть содержимым,
 			# поэтому они идут первыми ветками альтернации и возвращаются как есть.
-			$cfgText = [regex]::Replace($cfgText, '(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|(?<=\S) />', { param($m) if ($m.Value -eq ' />') { '/>' } else { $m.Value } })
+			$cfgText = [regex]::Replace($cfgText, '(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|<([A-Za-z0-9_:.\-]+)((?:\s+[A-Za-z0-9_:.\-]+="[^"]*")*)\s+/>', { param($m) if ($m.Groups[1].Success) { '<' + $m.Groups[1].Value + $m.Groups[2].Value + '/>' } else { $m.Value } })
 			# Целевой перевод строки: стиль файла-назначения — правка наследует его (#44/#46/#47),
 			# новый файл получает канон выгрузки CRLF. Зеркало _detect_xml_style в py-порту.
 			$targetEol = if ((Test-Path -LiteralPath $configXml) -and ([System.IO.File]::ReadAllText($configXml) -notmatch "`r`n")) { "`n" } else { "`r`n" }

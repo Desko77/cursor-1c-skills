@@ -327,6 +327,11 @@ def invoke_sibling(script, argv, what):
 
 def save_xml(doc, path):
     raw = etree.tostring(doc, xml_declaration=True, encoding="UTF-8")
+    # Пустой элемент: ElementTree отдает `<a />`, Конфигуратор пишет `<a/>`. Внутри
+    # CDATA/комментария или значения атрибута ` />` может быть содержимым, поэтому ветками
+    # альтернации и возвращаются как есть.
+    raw = re.sub(rb'(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|(?<=\S) />',
+                    lambda m: b'/>' if m.group(0) == b' />' else m.group(0), raw)
     # lxml пишет декларацию в ОДИНАРНЫХ кавычках, платформа и PS-порт — в двойных.
     raw = raw.replace(b"<?xml version='1.0' encoding='UTF-8'?>",
                       b'<?xml version="1.0" encoding="UTF-8"?>')
@@ -644,8 +649,11 @@ else:
         old_namespace = schema.get("targetNamespace")
         schema = apply_model_operation(schema)
 
+        schema_bytes = etree.tostring(schema, xml_declaration=True, encoding="UTF-8")
+        schema_bytes = re.sub(rb'(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|<([A-Za-z0-9_:.\-]+)((?:\s+[A-Za-z0-9_:.\-]+="[^"]*")*)\s+/>',
+                lambda m: b'<' + m.group(1) + m.group(2) + b'/>' if m.group(1) else m.group(0), schema_bytes)
         with open(xsd_path, "wb") as f:
-            f.write(etree.tostring(schema, xml_declaration=True, encoding="UTF-8"))
+            f.write(schema_bytes)
         invoke_sibling(COMPILE, ["-XsdPath", xsd_path, "-OutputDir", config_root,
                                  "-Name", pkg_name, "-Force"], "xdto-compile")
 

@@ -13,6 +13,13 @@ $ErrorActionPreference = "Stop"
 function Info([string]$msg) { Write-Host "[INFO] $msg" }
 function Warn([string]$msg) { Write-Host "[WARN] $msg" }
 
+# OuterXml отдает пустой элемент как "<Tag />"; 1С пишет его без пробела, и фрагмент
+# с лишним пробелом уносит расхождение в собираемый файл расширения.
+function Get-TightXml([string]$xml) {
+	if (-not $xml) { return $xml }
+	return [regex]::Replace($xml, '(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|<([A-Za-z0-9_:.\-]+)((?:\s+[A-Za-z0-9_:.\-]+="[^"]*")*)\s+/>', { param($m) if ($m.Groups[1].Success) { '<' + $m.Groups[1].Value + $m.Groups[2].Value + '/>' } else { $m.Value } })
+}
+
 # --- 1. Resolve paths ---
 if (-not [System.IO.Path]::IsPathRooted($ExtensionPath)) {
 	$ExtensionPath = Join-Path (Get-Location).Path $ExtensionPath
@@ -536,7 +543,7 @@ function Borrow-Form {
 			$reachedVisual = $true; continue
 		}
 		if (-not $reachedVisual) {
-			$formProps += $fc.OuterXml
+			$formProps += Get-TightXml $fc.OuterXml
 		}
 	}
 
@@ -546,7 +553,7 @@ function Borrow-Form {
 	# AutoCommandBar: keep ChildItems (buttons with CommandName→0), Autofill→false
 	$autoCmdXml = ""
 	if ($srcAutoCmd) {
-		$autoCmdXml = $srcAutoCmd.OuterXml
+		$autoCmdXml = Get-TightXml $srcAutoCmd.OuterXml
 		$autoCmdXml = [regex]::Replace($autoCmdXml, $nsStripPattern, '')
 		$autoCmdXml = [regex]::Replace($autoCmdXml, '<CommandName>[^<]*</CommandName>', '<CommandName>0</CommandName>')
 		$autoCmdXml = $autoCmdXml -replace '<Autofill>true</Autofill>', '<Autofill>false</Autofill>'
@@ -564,7 +571,7 @@ function Borrow-Form {
 	# ChildItems: copy full tree, clean up base-config references
 	$childItemsXml = ""
 	if ($srcChildItems) {
-		$childItemsXml = $srcChildItems.OuterXml
+		$childItemsXml = Get-TightXml $srcChildItems.OuterXml
 		$childItemsXml = [regex]::Replace($childItemsXml, $nsStripPattern, '')
 		# Replace all CommandName values with 0
 		$childItemsXml = [regex]::Replace($childItemsXml, '<CommandName>[^<]*</CommandName>', '<CommandName>0</CommandName>')
@@ -953,6 +960,10 @@ function Register-FormInObject {
 	$text2 = [System.Text.Encoding]::UTF8.GetString($bytes2)
 	if ($text2.Length -gt 0 -and $text2[0] -eq [char]0xFEFF) { $text2 = $text2.Substring(1) }
 	$text2 = $text2.Replace('encoding="utf-8"', 'encoding="UTF-8"')
+	# Пустой элемент: XmlWriter отдает `<a />`, Конфигуратор пишет `<a/>`. Внутри
+	# CDATA/комментария или значения атрибута ` />` может быть содержимым,
+	# поэтому они идут первыми ветками альтернации и возвращаются как есть.
+	$text2 = [regex]::Replace($text2, '(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|<([A-Za-z0-9_:.\-]+)((?:\s+[A-Za-z0-9_:.\-]+="[^"]*")*)\s+/>', { param($m) if ($m.Groups[1].Success) { '<' + $m.Groups[1].Value + $m.Groups[2].Value + '/>' } else { $m.Value } })
 
 	$utf8Bom2 = New-Object System.Text.UTF8Encoding($true)
 	[System.IO.File]::WriteAllText($objFile, $text2, $utf8Bom2)
@@ -1092,7 +1103,7 @@ function Resolve-SourceAttributes {
 
 			$uuid = $child.GetAttribute("uuid")
 			$typeNode = $child.SelectSingleNode("md:Properties/md:Type", $srcNs)
-			$typeXml = if ($typeNode) { $typeNode.OuterXml } else { "" }
+			$typeXml = if ($typeNode) { Get-TightXml $typeNode.OuterXml } else { "" }
 			# Strip namespace declarations from Type
 			$typeXml = [regex]::Replace($typeXml, '\s+xmlns(?::\w+)?="[^"]*"', '')
 
@@ -1131,7 +1142,7 @@ function Resolve-SourceAttributes {
 					if (-not $tsAttrName) { continue }
 					$tsAttrUuid = $tsChild.GetAttribute("uuid")
 					$tsTypeNode = $tsChild.SelectSingleNode("md:Properties/md:Type", $srcNs)
-					$tsTypeXml = if ($tsTypeNode) { $tsTypeNode.OuterXml } else { "" }
+					$tsTypeXml = if ($tsTypeNode) { Get-TightXml $tsTypeNode.OuterXml } else { "" }
 					$tsTypeXml = [regex]::Replace($tsTypeXml, '\s+xmlns(?::\w+)?="[^"]*"', '')
 					$tsAttrs += @{ Name = $tsAttrName.InnerText; Uuid = $tsAttrUuid; TypeXml = $tsTypeXml }
 				}
@@ -1327,6 +1338,7 @@ function Merge-AttributesIntoObject {
 		$text3 = [System.Text.Encoding]::UTF8.GetString($bytes3)
 		if ($text3.Length -gt 0 -and $text3[0] -eq [char]0xFEFF) { $text3 = $text3.Substring(1) }
 		$text3 = $text3.Replace('encoding="utf-8"', 'encoding="UTF-8"')
+		$text3 = [regex]::Replace($text3, '(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|<([A-Za-z0-9_:.\-]+)((?:\s+[A-Za-z0-9_:.\-]+="[^"]*")*)\s+/>', { param($m) if ($m.Groups[1].Success) { '<' + $m.Groups[1].Value + $m.Groups[2].Value + '/>' } else { $m.Value } })
 
 		# Insert attributes before </ChildObjects>
 		$text3 = $text3 -replace '</ChildObjects>', "${allAttrXml}`r`n`t`t</ChildObjects>"
@@ -1755,6 +1767,7 @@ $memStream.Close()
 $text = [System.Text.Encoding]::UTF8.GetString($bytes)
 if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
 $text = $text.Replace('encoding="utf-8"', 'encoding="UTF-8"')
+$text = [regex]::Replace($text, '(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|<([A-Za-z0-9_:.\-]+)((?:\s+[A-Za-z0-9_:.\-]+="[^"]*")*)\s+/>', { param($m) if ($m.Groups[1].Success) { '<' + $m.Groups[1].Value + $m.Groups[2].Value + '/>' } else { $m.Value } })
 
 $utf8Bom = New-Object System.Text.UTF8Encoding($true)
 [System.IO.File]::WriteAllText($extResolvedPath, $text, $utf8Bom)

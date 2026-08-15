@@ -5,6 +5,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import uuid
@@ -258,6 +259,11 @@ def parse_value_list(val):
 
 def save_xml_bom(tree, path):
     xml_bytes = etree.tostring(tree, xml_declaration=True, encoding="UTF-8")
+    # Пустой элемент: ElementTree отдает `<a />`, Конфигуратор пишет `<a/>`. Внутри
+    # CDATA/комментария или значения атрибута ` />` может быть содержимым, поэтому ветками
+    # альтернации и возвращаются как есть.
+    xml_bytes = re.sub(rb'(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|(?<=\S) />',
+                    lambda m: b'/>' if m.group(0) == b' />' else m.group(0), xml_bytes)
     xml_bytes = xml_bytes.replace(b"<?xml version='1.0' encoding='UTF-8'?>", b'<?xml version="1.0" encoding="utf-8"?>')
     if not xml_bytes.endswith(b"\n"):
         xml_bytes += b"\n"
