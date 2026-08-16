@@ -466,6 +466,30 @@ foreach ($area in $def.areas) {
 		if ($row.cells -and $row.cells.Count -gt 0) {
 			$rowHasContent = $true
 
+			# Ячейка без col занимает ближайшую свободную колонку слева направо. Раньше такой
+			# ячейке доставался номер 0 (пустое свойство приводилось к нулю), и в файл уходил
+			# индекс -1 сразу для всех - колонки не различались.
+			$claimed = @{}
+			foreach ($rsk in $rowspanOccupied.Keys) { $claimed[$rsk] = $true }
+			foreach ($cell in $row.cells) {
+				if ($cell.col) {
+					$cs = [int]$cell.col
+					$sp = if ($cell.span) { [int]$cell.span } else { 1 }
+					for ($c = $cs; $c -lt ($cs + $sp); $c++) { $claimed[$c] = $true }
+				}
+			}
+			$cursor = 1
+			foreach ($cell in $row.cells) {
+				if ($cell.col) { continue }
+				$sp = if ($cell.span) { [int]$cell.span } else { 1 }
+				# Свободным должен быть ВЕСЬ диапазон объединения: иначе ячейка с span
+				# начиналась в свободной колонке и накрывала занятую соседнюю.
+				while (@($cursor..($cursor + $sp - 1)) | Where-Object { $claimed[$_] }) { $cursor++ }
+				$cell | Add-Member -NotePropertyName col -NotePropertyValue $cursor -Force
+				for ($c = $cursor; $c -lt ($cursor + $sp); $c++) { $claimed[$c] = $true }
+				$cursor += $sp
+			}
+
 			# Build set of occupied columns (1-based): explicit cells + rowspan from above
 			$occupiedCols = @{}
 			foreach ($rsk in $rowspanOccupied.Keys) { $occupiedCols[$rsk] = $true }

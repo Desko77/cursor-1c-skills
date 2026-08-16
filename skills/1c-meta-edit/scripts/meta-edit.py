@@ -54,6 +54,28 @@ warn_count = 0
 # ============================================================
 
 
+def _ps_scalar(value):
+    if isinstance(value, bool):
+        return 'True' if value else 'False'
+    if value is None:
+        return ''
+    return str(value)
+
+
+def ps_str(value):
+    """Приведение к строке по правилам PowerShell.
+
+    Замерено на pwsh 7: одиночный объект в "$x" дает @{k=v; k2=v2}, а массив склеивает через
+    пробел результаты ToString() элементов - и у разобранного из JSON объекта ToString() пуст.
+    В python str() дал бы repr списка, он и уезжал в XML.
+    """
+    if isinstance(value, (list, tuple)):
+        return ' '.join('' if isinstance(x, dict) else _ps_scalar(x) for x in value)
+    if isinstance(value, dict):
+        return '@{' + '; '.join(k + '=' + _ps_scalar(v) for k, v in value.items()) + '}'
+    return _ps_scalar(value)
+
+
 def info(msg):
     print(f"[INFO] {msg}")
 
@@ -463,7 +485,7 @@ def insert_before_element(container, new_node, ref_node, child_indent):
     if ref_node is not None:
         # Insert before ref_node
         idx = list(container).index(ref_node)
-        new_node.tail = "\r\n" + child_indent
+        new_node.tail = "\n" + child_indent
         container.insert(idx, new_node)
     else:
         # Append: insert before closing tag
@@ -473,13 +495,13 @@ def insert_before_element(container, new_node, ref_node, child_indent):
             # The last element's tail is the whitespace before </Container>
             # We set new_node.tail to what last.tail was (newline + parent indent)
             new_node.tail = last.tail
-            last.tail = "\r\n" + child_indent
+            last.tail = "\n" + child_indent
             container.append(new_node)
         else:
             # Container is empty (possibly self-closing)
             parent_indent = child_indent[:-1] if len(child_indent) > 0 else ""
-            container.text = "\r\n" + child_indent
-            new_node.tail = "\r\n" + parent_indent
+            container.text = "\n" + child_indent
+            new_node.tail = "\n" + parent_indent
             container.append(new_node)
 
 
@@ -543,14 +565,14 @@ def ensure_child_objects_open():
         if not has_elements:
             # It's empty - add whitespace for proper formatting
             indent = get_child_indent(obj_element)
-            child_objects_el.text = "\r\n" + indent
+            child_objects_el.text = "\n" + indent
         return
 
     # No ChildObjects at all - create one after Properties
     indent = get_child_indent(obj_element)
 
     co_el = etree.Element(f"{{{md_ns}}}ChildObjects")
-    co_el.text = "\r\n" + indent
+    co_el.text = "\n" + indent
 
     # Find where to insert: after Properties
     ref_node = None
@@ -566,7 +588,7 @@ def ensure_child_objects_open():
     if ref_node is not None:
         # Insert before ref_node
         idx = list(obj_element).index(ref_node)
-        co_el.tail = "\r\n" + indent
+        co_el.tail = "\n" + indent
         obj_element.insert(idx, co_el)
     else:
         # Append
@@ -574,12 +596,12 @@ def ensure_child_objects_open():
         if len(children) > 0:
             last = children[-1]
             co_el.tail = last.tail
-            last.tail = "\r\n" + indent
+            last.tail = "\n" + indent
             obj_element.append(co_el)
         else:
             parent_indent = indent[:-1] if len(indent) > 0 else ""
-            obj_element.text = "\r\n" + indent
-            co_el.tail = "\r\n" + parent_indent
+            obj_element.text = "\n" + indent
+            co_el.tail = "\n" + parent_indent
             obj_element.append(co_el)
 
     child_objects_el = co_el
@@ -1691,12 +1713,12 @@ def modify_properties(props_def):
             if isinstance(prop_value, list):
                 values_list = [str(v) for v in prop_value]
             else:
-                values_list = [v.strip() for v in str(prop_value).split(";;") if v.strip()]
+                values_list = [v.strip() for v in ps_str(prop_value).split(";;") if v.strip()]
             set_complex_property(prop_name, values_list)
             continue
 
         # Handle boolean values
-        value_str = str(prop_value)
+        value_str = ps_str(prop_value)
         if isinstance(prop_value, bool):
             value_str = "true" if prop_value else "false"
 
@@ -1750,7 +1772,7 @@ def modify_child_elements(modify_def, child_type):
                     has_ts_child_elements = any(True for _ in ts_child_obj_el)
                     if not has_ts_child_elements:
                         ts_co_indent = get_child_indent(el)
-                        ts_child_obj_el.text = "\r\n" + ts_co_indent
+                        ts_child_obj_el.text = "\n" + ts_co_indent
                     attr_defs = change_value if isinstance(change_value, list) else [change_value]
                     for attr_def in attr_defs:
                         parsed = parse_attribute_shorthand(attr_def)
@@ -1806,7 +1828,7 @@ def modify_child_elements(modify_def, child_type):
                         break
                 if name_el is not None:
                     old_name = (name_el.text or "").strip()
-                    new_name = str(change_value)
+                    new_name = ps_str(change_value)
                     name_el.text = new_name
 
                     # Update Synonym if it was auto-generated
@@ -1846,7 +1868,7 @@ def modify_child_elements(modify_def, child_type):
                     if localname(gc) == "Type":
                         type_el = gc
                         break
-                new_type_str = str(change_value)
+                new_type_str = ps_str(change_value)
                 type_indent = get_child_indent(props_el)
                 new_type_xml = build_value_type_xml(type_indent, new_type_str)
                 new_type_nodes = import_fragment(new_type_xml)
@@ -1894,7 +1916,7 @@ def modify_child_elements(modify_def, child_type):
                         syn_el = gc
                         break
                 syn_indent = get_child_indent(props_el)
-                new_syn_xml = build_mltext_xml(syn_indent, "Synonym", str(change_value))
+                new_syn_xml = build_mltext_xml(syn_indent, "Synonym", ps_str(change_value))
                 new_syn_nodes = import_fragment(new_syn_xml)
                 if syn_el is not None and new_syn_nodes:
                     syn_idx = list(props_el).index(syn_el)
@@ -1912,7 +1934,7 @@ def modify_child_elements(modify_def, child_type):
                         scalar_el = gc
                         break
                 if scalar_el is not None:
-                    value_str = str(change_value)
+                    value_str = ps_str(change_value)
                     if isinstance(change_value, bool):
                         value_str = "true" if change_value else "false"
                     else:
@@ -1991,7 +2013,7 @@ def add_complex_property_item(property_name, values):
 
     # If self-closing / empty, add closing whitespace
     if is_empty and not (prop_el.text and prop_el.text.strip()):
-        prop_el.text = "\r\n" + indent
+        prop_el.text = "\n" + indent
 
     for val in values:
         if val in existing:
@@ -2064,7 +2086,7 @@ def set_complex_property(property_name, values):
         return
 
     # Add closing whitespace
-    prop_el.text = "\r\n" + indent
+    prop_el.text = "\n" + indent
 
     # Add each value
     for val in values:
@@ -2097,7 +2119,7 @@ def save_xml(tree, path):
     xml_bytes = re.sub(rb'(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|(?<=\S) />',
                     lambda m: b'/>' if m.group(0) == b' />' else m.group(0), xml_bytes)
     # Fix XML declaration quotes
-    xml_bytes = xml_bytes.replace(b"<?xml version='1.0' encoding='UTF-8'?>", b'<?xml version="1.0" encoding="utf-8"?>')
+    xml_bytes = xml_bytes.replace(b"<?xml version='1.0' encoding='UTF-8'?>", b'<?xml version="1.0" encoding="UTF-8"?>')
     # Fix d5p1 namespace declarations stripped by lxml (it treats them as unused
     # because d5p1: appears only in text content, not in element/attribute names)
     xml_bytes = re.sub(
@@ -2105,8 +2127,18 @@ def save_xml(tree, path):
         b'\\1 xmlns:d5p1="http://v8.1c.ru/8.1/data/enterprise/current-config"\\2',
         xml_bytes
     )
-    if not xml_bytes.endswith(b"\n"):
-        xml_bytes += b"\n"
+    # Концы строк: XML-разбор нормализует CRLF в LF при чтении, поэтому разворачиваем обратно -
+    # исходники 1С хранятся в CRLF. Хвостового перевода платформа не пишет, замерено на выгрузках.
+    # Концы строк берутся из ФАЙЛА, который правим: объекты конфигурации хранятся в CRLF,
+    # схемы компоновки в LF. Форсировать один вид нельзя - навык испортит чужой формат.
+    # После разбора в байтах всегда LF: XML-разбор нормализует концы строк при чтении.
+    _orig = open(path, 'rb').read() if os.path.exists(path) else b''
+    if b'\r\n' in _orig:
+        xml_bytes = xml_bytes.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+    # Хвостовой перевод исходного файла тоже сохраняется: универсального правила нет,
+    # часть навыков его пишет, часть нет - правка не должна это менять.
+    if _orig.endswith(b'\n') and not xml_bytes.endswith(b'\n'):
+        xml_bytes += b'\r\n' if b'\r\n' in _orig else b'\n'
     with open(path, "wb") as f:
         f.write(b"\xef\xbb\xbf")
         f.write(xml_bytes)

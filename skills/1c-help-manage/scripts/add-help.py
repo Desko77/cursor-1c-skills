@@ -36,9 +36,19 @@ def save_xml_with_bom(tree, path):
     # альтернации и возвращаются как есть.
     xml_bytes = re.sub(rb'(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|(?<=\S) />',
                     lambda m: b'/>' if m.group(0) == b' />' else m.group(0), xml_bytes)
-    xml_bytes = xml_bytes.replace(b"<?xml version='1.0' encoding='UTF-8'?>", b'<?xml version="1.0" encoding="utf-8"?>')
-    if not xml_bytes.endswith(b"\n"):
-        xml_bytes += b"\n"
+    xml_bytes = xml_bytes.replace(b"<?xml version='1.0' encoding='UTF-8'?>", b'<?xml version="1.0" encoding="UTF-8"?>')
+    # Концы строк: XML-разбор нормализует CRLF в LF при чтении, поэтому разворачиваем обратно -
+    # исходники 1С хранятся в CRLF. Хвостового перевода платформа не пишет, замерено на выгрузках.
+    # Концы строк берутся из ФАЙЛА, который правим: объекты конфигурации хранятся в CRLF,
+    # схемы компоновки в LF. Форсировать один вид нельзя - навык испортит чужой формат.
+    # После разбора в байтах всегда LF: XML-разбор нормализует концы строк при чтении.
+    _orig = open(path, 'rb').read() if os.path.exists(path) else b''
+    if b'\r\n' in _orig:
+        xml_bytes = xml_bytes.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+    # Хвостовой перевод исходного файла тоже сохраняется: универсального правила нет,
+    # часть навыков его пишет, часть нет - правка не должна это менять.
+    if _orig.endswith(b'\n') and not xml_bytes.endswith(b'\n'):
+        xml_bytes += b'\r\n' if b'\r\n' in _orig else b'\n'
     with open(path, "wb") as f:
         f.write(b"\xef\xbb\xbf")
         f.write(xml_bytes)

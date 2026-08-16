@@ -8,6 +8,62 @@ import sys
 
 from lxml import etree
 
+
+class LenientDict(dict):
+    """Словарь, нечувствительный к регистру ключей - как PSObject в PowerShell.
+
+    Нужен для прощающего ввода: DSL принимает и `operation`, и `Operation`. Вложенные словари
+    оборачиваются тоже, иначе леность теряется на первом же уровне вложенности.
+    """
+
+    def __init__(self, data=None):
+        super().__init__()
+        for k, v in (data or {}).items():
+            self[k] = v
+
+    @staticmethod
+    def _wrap(v):
+        if isinstance(v, dict):
+            return LenientDict(v)
+        if isinstance(v, list):
+            return [LenientDict(x) if isinstance(x, dict) else x for x in v]
+        return v
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, self._wrap(value))
+
+    def _actual_key(self, key):
+        if super().__contains__(key):
+            return key
+        if isinstance(key, str):
+            low = key.lower()
+            for k in super().keys():
+                if isinstance(k, str) and k.lower() == low:
+                    return k
+        return None
+
+    def __getitem__(self, key):
+        k = self._actual_key(key)
+        if k is None:
+            raise KeyError(key)
+        return super().__getitem__(k)
+
+    def __contains__(self, key):
+        return self._actual_key(key) is not None
+
+    def get(self, key, default=None):
+        k = self._actual_key(key)
+        return super().__getitem__(k) if k is not None else default
+
+
+def lenient(data):
+    """JSON бывает объектом и массивом объектов - оборачиваем и то, и другое."""
+    if isinstance(data, list):
+        return [LenientDict(x) if isinstance(x, dict) else x for x in data]
+    return LenientDict(data) if isinstance(data, dict) else data
+
+
+
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 
@@ -75,7 +131,7 @@ root = tree.getroot()
 # ── 2. Load JSON ────────────────────────────────────────────
 
 with open(json_path, "r", encoding="utf-8-sig") as f:
-    defn = json.load(f)
+    defn = lenient(json.load(f))
 
 # ── 3. Form name + header ───────────────────────────────────
 
@@ -314,11 +370,18 @@ def emit_single_type(type_str, indent):
 
 
 def emit_mltext(tag, text, indent):
+    # Значение бывает строкой (тогда это русский вариант) и словарем { 'ru': ..., 'en': ... }.
+    # Раньше словарь приводился к строке и уезжал в XML как есть, вместо перевода.
+    if isinstance(text, dict):
+        ml_items = [(str(lang), str(content)) for lang, content in text.items()]
+    else:
+        ml_items = [('ru', str(text))]
     X(f"{indent}<{tag}>")
-    X(f"{indent}\t<v8:item>")
-    X(f"{indent}\t\t<v8:lang>ru</v8:lang>")
-    X(f"{indent}\t\t<v8:content>{esc_xml(text)}</v8:content>")
-    X(f"{indent}\t</v8:item>")
+    for lang, content in ml_items:
+        X(f"{indent}	<v8:item>")
+        X(f"{indent}		<v8:lang>{lang}</v8:lang>")
+        X(f"{indent}		<v8:content>{esc_xml(content)}</v8:content>")
+        X(f"{indent}	</v8:item>")
     X(f"{indent}</{tag}>")
 
 
@@ -1256,10 +1319,20 @@ xml_bytes = etree.tostring(tree, xml_declaration=True, encoding="UTF-8")
 xml_bytes = re.sub(rb'(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|(?<=\S) />',
                 lambda m: b'/>' if m.group(0) == b' />' else m.group(0), xml_bytes)
 # Fix XML declaration quotes
-xml_bytes = xml_bytes.replace(b"<?xml version='1.0' encoding='UTF-8'?>", b'<?xml version="1.0" encoding="utf-8"?>')
-if not xml_bytes.endswith(b"\n"):
-    xml_bytes += b"\n"
+xml_bytes = xml_bytes.replace(b"<?xml version='1.0' encoding='UTF-8'?>", b'<?xml version="1.0" encoding="UTF-8"?>')
 # Write with BOM
+# Концы строк: XML-разбор нормализует CRLF в LF при чтении, поэтому разворачиваем обратно -
+# исходники 1С хранятся в CRLF. Хвостового перевода платформа не пишет, замерено на выгрузках.
+# Концы строк берутся из ФАЙЛА, который правим: объекты конфигурации хранятся в CRLF,
+# схемы компоновки в LF. Форсировать один вид нельзя - навык испортит чужой формат.
+# После разбора в байтах всегда LF: XML-разбор нормализует концы строк при чтении.
+_orig = open(resolved_form_path, 'rb').read() if os.path.exists(resolved_form_path) else b''
+if b'\r\n' in _orig:
+    xml_bytes = xml_bytes.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+# Хвостовой перевод исходного файла тоже сохраняется: универсального правила нет,
+# часть навыков его пишет, часть нет - правка не должна это менять.
+if _orig.endswith(b'\n') and not xml_bytes.endswith(b'\n'):
+    xml_bytes += b'\r\n' if b'\r\n' in _orig else b'\n'
 with open(resolved_form_path, "wb") as f:
     f.write(b'\xef\xbb\xbf')
     f.write(xml_bytes)

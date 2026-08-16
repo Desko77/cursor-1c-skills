@@ -11,6 +11,62 @@ import sys
 from html import escape as html_escape
 from lxml import etree
 
+
+class LenientDict(dict):
+    """Словарь, нечувствительный к регистру ключей - как PSObject в PowerShell.
+
+    Нужен для прощающего ввода: DSL принимает и `operation`, и `Operation`. Вложенные словари
+    оборачиваются тоже, иначе леность теряется на первом же уровне вложенности.
+    """
+
+    def __init__(self, data=None):
+        super().__init__()
+        for k, v in (data or {}).items():
+            self[k] = v
+
+    @staticmethod
+    def _wrap(v):
+        if isinstance(v, dict):
+            return LenientDict(v)
+        if isinstance(v, list):
+            return [LenientDict(x) if isinstance(x, dict) else x for x in v]
+        return v
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, self._wrap(value))
+
+    def _actual_key(self, key):
+        if super().__contains__(key):
+            return key
+        if isinstance(key, str):
+            low = key.lower()
+            for k in super().keys():
+                if isinstance(k, str) and k.lower() == low:
+                    return k
+        return None
+
+    def __getitem__(self, key):
+        k = self._actual_key(key)
+        if k is None:
+            raise KeyError(key)
+        return super().__getitem__(k)
+
+    def __contains__(self, key):
+        return self._actual_key(key) is not None
+
+    def get(self, key, default=None):
+        k = self._actual_key(key)
+        return super().__getitem__(k) if k is not None else default
+
+
+def lenient(data):
+    """JSON бывает объектом и массивом объектов - оборачиваем и то, и другое."""
+    if isinstance(data, list):
+        return [LenientDict(x) if isinstance(x, dict) else x for x in data]
+    return LenientDict(data) if isinstance(data, dict) else data
+
+
+
 MD_NS = "http://v8.1c.ru/8.3/MDClasses"
 XR_NS = "http://v8.1c.ru/8.3/xcf/readable"
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
@@ -88,13 +144,13 @@ def insert_before_closing(container, new_el, child_indent):
     children = list(container)
     if len(children) == 0:
         parent_indent = child_indent[:-1] if len(child_indent) > 0 else ""
-        container.text = "\r\n" + child_indent
-        new_el.tail = "\r\n" + parent_indent
+        container.text = "\n" + child_indent
+        new_el.tail = "\n" + parent_indent
         container.append(new_el)
     else:
         last = children[-1]
         new_el.tail = last.tail
-        last.tail = "\r\n" + child_indent
+        last.tail = "\n" + child_indent
         container.append(new_el)
 
 
@@ -104,10 +160,10 @@ def insert_before_ref(container, new_el, ref_el, child_indent):
     prev = ref_el.getprevious()
     if prev is not None:
         new_el.tail = prev.tail
-        prev.tail = "\r\n" + child_indent
+        prev.tail = "\n" + child_indent
     else:
         new_el.tail = container.text
-        container.text = "\r\n" + child_indent
+        container.text = "\n" + child_indent
     container.insert(idx, new_el)
 
 
@@ -125,7 +181,7 @@ def remove_with_indent(el):
 
 def expand_self_closing(container, parent_indent):
     if len(container) == 0 and not (container.text and container.text.strip()):
-        container.text = "\r\n" + parent_indent
+        container.text = "\n" + parent_indent
 
 
 def import_fragment(xml_string):
@@ -153,12 +209,38 @@ def save_xml_bom(tree, path):
     # альтернации и возвращаются как есть.
     xml_bytes = re.sub(rb'(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|(?<=\S) />',
                     lambda m: b'/>' if m.group(0) == b' />' else m.group(0), xml_bytes)
-    xml_bytes = xml_bytes.replace(b"<?xml version='1.0' encoding='UTF-8'?>", b'<?xml version="1.0" encoding="utf-8"?>')
-    if not xml_bytes.endswith(b"\n"):
-        xml_bytes += b"\n"
+    xml_bytes = xml_bytes.replace(b"<?xml version='1.0' encoding='UTF-8'?>", b'<?xml version="1.0" encoding="UTF-8"?>')
+    # Концы строк: XML-разбор нормализует CRLF в LF при чтении, поэтому разворачиваем обратно -
+    # исходники 1С хранятся в CRLF. Хвостового перевода платформа не пишет, замерено на выгрузках.
+    # Концы строк берутся из ФАЙЛА, который правим: объекты конфигурации хранятся в CRLF,
+    # схемы компоновки в LF. Форсировать один вид нельзя - навык испортит чужой формат.
+    # После разбора в байтах всегда LF: XML-разбор нормализует концы строк при чтении.
+    _orig = open(path, 'rb').read() if os.path.exists(path) else b''
+    if b'\r\n' in _orig:
+        xml_bytes = xml_bytes.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+    # Хвостовой перевод исходного файла тоже сохраняется: универсального правила нет,
+    # часть навыков его пишет, часть нет - правка не должна это менять.
+    if _orig.endswith(b'\n') and not xml_bytes.endswith(b'\n'):
+        xml_bytes += b'\r\n' if b'\r\n' in _orig else b'\n'
     with open(path, "wb") as f:
         f.write(b"\xef\xbb\xbf")
         f.write(xml_bytes)
+
+
+OPERATIONS = (
+    "modify-property", "add-childObject", "remove-childObject",
+    "add-defaultRole", "remove-defaultRole", "set-defaultRoles",
+)
+
+
+def _canon_op(name):
+    """Имя операции приводится к каноническому виду - switch в PowerShell сравнивает
+    без учета регистра, а python по умолчанию с учетом."""
+    low = str(name).lower()
+    for o in OPERATIONS:
+        if o.lower() == low:
+            return o
+    return name
 
 
 def main():
@@ -263,11 +345,11 @@ def main():
                     lang_el.text = "ru"
                     content_el = etree.SubElement(item_el, f"{{{V8_NS}}}content")
                     content_el.text = prop_value
-                    prop_el.text = "\r\n" + indent + "\t"
-                    item_el.text = "\r\n" + indent + "\t\t"
-                    lang_el.tail = "\r\n" + indent + "\t\t"
-                    content_el.tail = "\r\n" + indent + "\t"
-                    item_el.tail = "\r\n" + indent
+                    prop_el.text = "\n" + indent + "\t"
+                    item_el.text = "\n" + indent + "\t\t"
+                    lang_el.tail = "\n" + indent + "\t\t"
+                    content_el.tail = "\n" + indent + "\t"
+                    item_el.tail = "\n" + indent
             elif prop_name in SCALAR_PROPS or prop_name in REF_PROPS:
                 for ch in list(prop_el):
                     prop_el.remove(ch)
@@ -484,7 +566,7 @@ def main():
         props_indent = get_child_indent(props_el)
         role_indent = props_indent + "\t"
 
-        roles_el.text = "\r\n" + props_indent
+        roles_el.text = "\n" + props_indent
 
         for item in items:
             role_name = item
@@ -506,7 +588,7 @@ def main():
         if not os.path.isabs(def_file):
             def_file = os.path.join(os.getcwd(), def_file)
         with open(def_file, "r", encoding="utf-8-sig") as fh:
-            ops = json.loads(fh.read())
+            ops = lenient(json.loads(fh.read()))
         if isinstance(ops, list):
             operations = ops
         else:
@@ -516,6 +598,8 @@ def main():
 
     for op in operations:
         op_name = op.get("operation", args.Operation or "")
+        # Регистр имени операции не значим: switch в PowerShell сравнивает без его учета.
+        op_name = _canon_op(op_name)
         op_value = op.get("value", args.Value or "")
 
         if op_name == "modify-property":

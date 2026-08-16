@@ -9,11 +9,93 @@ import re
 import sys
 
 
+class LenientDict(dict):
+    """Словарь, нечувствительный к регистру ключей - как PSObject в PowerShell.
+
+    Нужен для прощающего ввода: DSL принимает и `operation`, и `Operation`. Вложенные словари
+    оборачиваются тоже, иначе леность теряется на первом же уровне вложенности.
+    """
+
+    def __init__(self, data=None):
+        super().__init__()
+        for k, v in (data or {}).items():
+            self[k] = v
+
+    @staticmethod
+    def _wrap(v):
+        if isinstance(v, dict):
+            return LenientDict(v)
+        if isinstance(v, list):
+            return [LenientDict(x) if isinstance(x, dict) else x for x in v]
+        return v
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, self._wrap(value))
+
+    def _actual_key(self, key):
+        if super().__contains__(key):
+            return key
+        if isinstance(key, str):
+            low = key.lower()
+            for k in super().keys():
+                if isinstance(k, str) and k.lower() == low:
+                    return k
+        return None
+
+    def __getitem__(self, key):
+        k = self._actual_key(key)
+        if k is None:
+            raise KeyError(key)
+        return super().__getitem__(k)
+
+    def __contains__(self, key):
+        return self._actual_key(key) is not None
+
+    def get(self, key, default=None):
+        k = self._actual_key(key)
+        return super().__getitem__(k) if k is not None else default
+
+
+def _ps_scalar(value):
+    if isinstance(value, bool):
+        return 'True' if value else 'False'
+    if value is None:
+        return ''
+    return str(value)
+
+
+def ps_str(value):
+    """Приведение к строке по правилам PowerShell.
+
+    Замерено на pwsh 7: одиночный объект в "$x" дает @{k=v; k2=v2}, а массив склеивает через
+    пробел результаты ToString() элементов - и у разобранного из JSON объекта ToString() пуст.
+    В python str() дал бы repr списка, он и уезжал в XML.
+    """
+    if isinstance(value, (list, tuple)):
+        return ' '.join('' if isinstance(x, dict) else _ps_scalar(x) for x in value)
+    if isinstance(value, dict):
+        return '@{' + '; '.join(k + '=' + _ps_scalar(v) for k, v in value.items()) + '}'
+    return _ps_scalar(value)
+
+
+def lenient(data):
+    """JSON бывает объектом и массивом объектов - оборачиваем и то, и другое."""
+    if isinstance(data, list):
+        return [LenientDict(x) if isinstance(x, dict) else x for x in data]
+    return LenientDict(data) if isinstance(data, dict) else data
+
+
+
+
 def esc_xml(s):
     return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
 
 def write_utf8_bom(path, content):
+    # Исходники 1С хранятся в CRLF: этого ждет Конфигуратор, и это закреплено в .gitattributes.
+    # Сборка идет через '\n'.join, поэтому концы строк разворачиваются здесь, на записи.
+    # Нормализация идемпотентна - смешанный текст тоже приходит к одному виду.
+    content = content.replace('\r\n', '\n').replace('\n', '\r\n')
     with open(path, 'w', encoding='utf-8-sig', newline='') as f:
         f.write(content)
 
@@ -33,7 +115,7 @@ def main():
         sys.exit(1)
 
     with open(json_path, 'r', encoding='utf-8-sig') as f:
-        defn = json.load(f)
+        defn = lenient(json.load(f))
 
     if not defn.get('columns'):
         print("Required field 'columns' is missing", file=sys.stderr)
@@ -175,6 +257,10 @@ def main():
 
     # --- 5. Style resolver ---
     def resolve_style(style_name, fill_type):
+        # В PowerShell параметр объявлен как [string]: встроенный объект стиля превращается
+        # в текст @{...}, такого имени в наборе стилей нет, и стиль молча игнорируется.
+        # Здесь то же самое - иначе объект уходит в поиск по словарю и разбор падает.
+        style_name = ps_str(style_name) if style_name else style_name
         font_idx = font_map.get('default', 0)
         lb = -1; tb = -1; rb = -1; bb = -1
         ha = ''; va = ''; nf = ''
@@ -395,6 +481,30 @@ def main():
 
             if row.get('cells') and len(row['cells']) > 0:
                 row_has_content = True
+
+                # Ячейка без col занимает ближайшую свободную колонку слева направо. Раньше
+                # такой ячейке доставался номер 0 (пустое свойство приводилось к нулю), и в
+                # файл уходил индекс -1 сразу для всех - колонки не различались.
+                claimed = dict(rowspan_occupied)
+                for cell in row['cells']:
+                    if cell.get('col'):
+                        cs = int(cell['col'])
+                        sp = int(cell.get('span', 1))
+                        for c in range(cs, cs + sp):
+                            claimed[c] = True
+                cursor = 1
+                for cell in row['cells']:
+                    if cell.get('col'):
+                        continue
+                    sp = int(cell.get('span', 1))
+                    # Свободным должен быть ВЕСЬ диапазон объединения: иначе ячейка с span
+                    # начиналась в свободной колонке и накрывала занятую соседнюю.
+                    while any(claimed.get(c) for c in range(cursor, cursor + sp)):
+                        cursor += 1
+                    cell['col'] = cursor
+                    for c in range(cursor, cursor + sp):
+                        claimed[c] = True
+                    cursor += sp
 
                 # Build set of occupied columns (1-based)
                 occupied_cols = dict(rowspan_occupied)

@@ -7,12 +7,26 @@ import os
 import re
 import sys
 import uuid
+import copy
+
 from lxml import etree
 
 MD_NS = "http://v8.1c.ru/8.3/MDClasses"
 XR_NS = "http://v8.1c.ru/8.3/xcf/readable"
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 V8_NS = "http://v8.1c.ru/8.1/data/core"
+
+
+def fragment_xml(node):
+    """Разметка узла строкой, с кириллицей как есть.
+
+    Узел ВНУТРИ разобранного документа сериализуется в контексте этого документа, и lxml
+    заменяет каждый не-ASCII символ ссылкой вида &#x424;. У отсоединенной копии такого
+    контекста нет, и текст остается читаемым - как его пишет платформа.
+    """
+    # with_tail=False: у OuterXml в PowerShell хвостового текста нет, а lxml иначе
+    # прицепит отступ следующего узла - в файле появлялась лишняя пустая строка.
+    return etree.tostring(copy.deepcopy(node), encoding="unicode", with_tail=False)
 
 
 def localname(el):
@@ -316,13 +330,13 @@ def insert_before_closing(container, new_el, child_indent):
     children = list(container)
     if len(children) == 0:
         parent_indent = child_indent[:-1] if len(child_indent) > 0 else ""
-        container.text = "\r\n" + child_indent
-        new_el.tail = "\r\n" + parent_indent
+        container.text = "\n" + child_indent
+        new_el.tail = "\n" + parent_indent
         container.append(new_el)
     else:
         last = children[-1]
         new_el.tail = last.tail
-        last.tail = "\r\n" + child_indent
+        last.tail = "\n" + child_indent
         container.append(new_el)
 
 
@@ -331,16 +345,16 @@ def insert_before_ref(container, new_el, ref_el, child_indent):
     prev = ref_el.getprevious()
     if prev is not None:
         new_el.tail = prev.tail
-        prev.tail = "\r\n" + child_indent
+        prev.tail = "\n" + child_indent
     else:
         new_el.tail = container.text
-        container.text = "\r\n" + child_indent
+        container.text = "\n" + child_indent
     container.insert(idx, new_el)
 
 
 def expand_self_closing(container, parent_indent):
     if len(container) == 0 and not (container.text and container.text.strip()):
-        container.text = "\r\n" + parent_indent
+        container.text = "\n" + parent_indent
 
 
 def save_xml_bom(tree, path):
@@ -350,17 +364,30 @@ def save_xml_bom(tree, path):
     # альтернации и возвращаются как есть.
     xml_bytes = re.sub(rb'(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|(?<=\S) />',
                     lambda m: b'/>' if m.group(0) == b' />' else m.group(0), xml_bytes)
-    xml_bytes = xml_bytes.replace(b"<?xml version='1.0' encoding='UTF-8'?>", b'<?xml version="1.0" encoding="utf-8"?>')
-    if not xml_bytes.endswith(b"\n"):
-        xml_bytes += b"\n"
+    xml_bytes = xml_bytes.replace(b"<?xml version='1.0' encoding='UTF-8'?>", b'<?xml version="1.0" encoding="UTF-8"?>')
+    # Концы строк: XML-разбор нормализует CRLF в LF при чтении, поэтому разворачиваем обратно -
+    # исходники 1С хранятся в CRLF. Хвостового перевода платформа не пишет, замерено на выгрузках.
+    # Концы строк берутся из ФАЙЛА, который правим: объекты конфигурации хранятся в CRLF,
+    # схемы компоновки в LF. Форсировать один вид нельзя - навык испортит чужой формат.
+    # После разбора в байтах всегда LF: XML-разбор нормализует концы строк при чтении.
+    _orig = open(path, 'rb').read() if os.path.exists(path) else b''
+    if b'\r\n' in _orig:
+        xml_bytes = xml_bytes.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+    # Хвостовой перевод исходного файла тоже сохраняется: универсального правила нет,
+    # часть навыков его пишет, часть нет - правка не должна это менять.
+    if _orig.endswith(b'\n') and not xml_bytes.endswith(b'\n'):
+        xml_bytes += b'\r\n' if b'\r\n' in _orig else b'\n'
     with open(path, "wb") as f:
         f.write(b"\xef\xbb\xbf")
         f.write(xml_bytes)
 
 
 def save_text_bom(path, text):
+    # Текст собран из кусков с разными концами строк. Windows в текстовом режиме подставляет
+    # свой перевод поверх уже имеющегося возврата каретки, и в файл уходит \r\r\n, поэтому
+    # текст сперва приводится к одному виду.
     with open(path, "w", encoding="utf-8-sig") as fh:
-        fh.write(text)
+        fh.write(text.replace('\r\n', '\n'))
 
 
 def new_guid():
@@ -754,7 +781,7 @@ def main():
                 type_node = child.find(f"{{{MD_NS}}}Properties/{{{MD_NS}}}Type")
                 type_xml = ""
                 if type_node is not None:
-                    type_xml = etree.tostring(type_node, encoding="unicode")
+                    type_xml = fragment_xml(type_node)
                     type_xml = ns_strip.sub("", type_xml)
 
                 attrs.append({"Name": attr_name, "Uuid": attr_uuid, "TypeXml": type_xml})
@@ -800,7 +827,7 @@ def main():
                         ts_type_node = ts_child.find(f"{{{MD_NS}}}Properties/{{{MD_NS}}}Type")
                         ts_type_xml = ""
                         if ts_type_node is not None:
-                            ts_type_xml = etree.tostring(ts_type_node, encoding="unicode")
+                            ts_type_xml = fragment_xml(ts_type_node)
                             ts_type_xml = ns_strip.sub("", ts_type_xml)
                         ts_attrs.append({
                             "Name": (ts_attr_name_el.text or "").strip(),
@@ -1178,14 +1205,14 @@ def main():
                 continue
             if not reached_visual:
                 # Form-level properties before AutoCommandBar (WindowOpeningMode, AutoFillCheck, etc.)
-                form_props.append(etree.tostring(fc, encoding="unicode"))
+                form_props.append(fragment_xml(fc))
 
         ns_strip_pattern = re.compile(r'\s+xmlns(?::\w+)?="[^"]*"')
 
         # AutoCommandBar: keep ChildItems (buttons with CommandName->0), Autofill->false
         auto_cmd_xml = ""
         if src_auto_cmd is not None:
-            auto_cmd_xml = etree.tostring(src_auto_cmd, encoding="unicode")
+            auto_cmd_xml = fragment_xml(src_auto_cmd)
             auto_cmd_xml = ns_strip_pattern.sub("", auto_cmd_xml)
             auto_cmd_xml = re.sub(r'<CommandName>[^<]*</CommandName>', '<CommandName>0</CommandName>', auto_cmd_xml)
             auto_cmd_xml = auto_cmd_xml.replace('<Autofill>true</Autofill>', '<Autofill>false</Autofill>')
@@ -1207,7 +1234,7 @@ def main():
                 break
 
         if src_child_items is not None:
-            child_items_xml = etree.tostring(src_child_items, encoding="unicode")
+            child_items_xml = fragment_xml(src_child_items)
             child_items_xml = ns_strip_pattern.sub("", child_items_xml)
             # Replace all CommandName values with 0
             child_items_xml = re.sub(r'<CommandName>[^<]*</CommandName>', '<CommandName>0</CommandName>', child_items_xml)

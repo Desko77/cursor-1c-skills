@@ -346,6 +346,18 @@ def save_xml(doc, path):
     except OSError:
         pass
     raw = raw.replace(b"\r\n", b"\n").replace(b"\n", src_eol)
+    # Концы строк: XML-разбор нормализует CRLF в LF при чтении, поэтому разворачиваем обратно -
+    # исходники 1С хранятся в CRLF. Хвостового перевода платформа не пишет, замерено на выгрузках.
+    # Концы строк берутся из ФАЙЛА, который правим: объекты конфигурации хранятся в CRLF,
+    # схемы компоновки в LF. Форсировать один вид нельзя - навык испортит чужой формат.
+    # После разбора в байтах всегда LF: XML-разбор нормализует концы строк при чтении.
+    _orig = open(path, 'rb').read() if os.path.exists(path) else b''
+    if b'\r\n' in _orig:
+        raw = raw.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+    # Хвостовой перевод исходного файла тоже сохраняется: универсального правила нет,
+    # часть навыков его пишет, часть нет - правка не должна это менять.
+    if _orig.endswith(b'\n') and not raw.endswith(b'\n'):
+        raw += b'\r\n' if b'\r\n' in _orig else b'\n'
     with open(path, "wb") as f:
         f.write(b"\xef\xbb\xbf" + raw)
 
@@ -652,6 +664,18 @@ else:
         schema_bytes = etree.tostring(schema, xml_declaration=True, encoding="UTF-8")
         schema_bytes = re.sub(rb'(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|<([A-Za-z0-9_:.\-]+)((?:\s+[A-Za-z0-9_:.\-]+="[^"]*")*)\s+/>',
                 lambda m: b'<' + m.group(1) + m.group(2) + b'/>' if m.group(1) else m.group(0), schema_bytes)
+        # Концы строк: XML-разбор нормализует CRLF в LF при чтении, поэтому разворачиваем обратно -
+        # исходники 1С хранятся в CRLF. Хвостового перевода платформа не пишет, замерено на выгрузках.
+        # Концы строк берутся из ФАЙЛА, который правим: объекты конфигурации хранятся в CRLF,
+        # схемы компоновки в LF. Форсировать один вид нельзя - навык испортит чужой формат.
+        # После разбора в байтах всегда LF: XML-разбор нормализует концы строк при чтении.
+        _orig = open(xsd_path, 'rb').read() if os.path.exists(xsd_path) else b''
+        if b'\r\n' in _orig:
+            schema_bytes = schema_bytes.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+        # Хвостовой перевод исходного файла тоже сохраняется: универсального правила нет,
+        # часть навыков его пишет, часть нет - правка не должна это менять.
+        if _orig.endswith(b'\n') and not schema_bytes.endswith(b'\n'):
+            schema_bytes += b'\r\n' if b'\r\n' in _orig else b'\n'
         with open(xsd_path, "wb") as f:
             f.write(schema_bytes)
         invoke_sibling(COMPILE, ["-XsdPath", xsd_path, "-OutputDir", config_root,

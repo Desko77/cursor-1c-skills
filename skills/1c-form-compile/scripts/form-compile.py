@@ -11,6 +11,62 @@ import uuid
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
 
+
+class LenientDict(dict):
+    """Словарь, нечувствительный к регистру ключей - как PSObject в PowerShell.
+
+    Нужен для прощающего ввода: DSL принимает и `operation`, и `Operation`. Вложенные словари
+    оборачиваются тоже, иначе леность теряется на первом же уровне вложенности.
+    """
+
+    def __init__(self, data=None):
+        super().__init__()
+        for k, v in (data or {}).items():
+            self[k] = v
+
+    @staticmethod
+    def _wrap(v):
+        if isinstance(v, dict):
+            return LenientDict(v)
+        if isinstance(v, list):
+            return [LenientDict(x) if isinstance(x, dict) else x for x in v]
+        return v
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, self._wrap(value))
+
+    def _actual_key(self, key):
+        if super().__contains__(key):
+            return key
+        if isinstance(key, str):
+            low = key.lower()
+            for k in super().keys():
+                if isinstance(k, str) and k.lower() == low:
+                    return k
+        return None
+
+    def __getitem__(self, key):
+        k = self._actual_key(key)
+        if k is None:
+            raise KeyError(key)
+        return super().__getitem__(k)
+
+    def __contains__(self, key):
+        return self._actual_key(key) is not None
+
+    def get(self, key, default=None):
+        k = self._actual_key(key)
+        return super().__getitem__(k) if k is not None else default
+
+
+def lenient(data):
+    """JSON бывает объектом и массивом объектов - оборачиваем и то, и другое."""
+    if isinstance(data, list):
+        return [LenientDict(x) if isinstance(x, dict) else x for x in data]
+    return LenientDict(data) if isinstance(data, dict) else data
+
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # FROM-OBJECT MODE: functions for metadata parsing, presets, DSL generation
 # ═══════════════════════════════════════════════════════════════════════════
@@ -306,7 +362,7 @@ def load_preset(preset_name, script_dir, out_path_resolved):
     built_in_path = os.path.join(preset_dir, f'{preset_name}.json')
     if os.path.isfile(built_in_path):
         with open(built_in_path, 'r', encoding='utf-8-sig') as f:
-            preset_data = json.load(f)
+            preset_data = lenient(json.load(f))
         for k in list(preset_data.keys()):
             defaults[k] = _deep_merge(defaults.get(k), preset_data[k])
 
@@ -316,7 +372,7 @@ def load_preset(preset_name, script_dir, out_path_resolved):
         proj_preset = os.path.join(scan_dir, 'presets', 'skills', 'form', f'{preset_name}.json')
         if os.path.isfile(proj_preset):
             with open(proj_preset, 'r', encoding='utf-8-sig') as f:
-                proj_data = json.load(f)
+                proj_data = lenient(json.load(f))
             for k in list(proj_data.keys()):
                 defaults[k] = _deep_merge(defaults.get(k), proj_data[k])
             break
@@ -1251,15 +1307,33 @@ def esc_xml(s):
     return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
 
+def resolve_picture_ref(picture):
+    """Ссылка на картинку: имя строкой либо объект { 'src': ..., 'transparentPixel': ... }.
+
+    Раньше объект приводился к тексту целиком и имя картинки терялось.
+    """
+    if picture is None:
+        return ''
+    if isinstance(picture, dict):
+        return str(picture.get('src', ''))
+    return str(picture)
+
 def emit_mltext(lines, indent, tag, text):
     if not text:
         lines.append(f"{indent}<{tag}/>")
         return
+    # Значение бывает строкой (тогда это русский вариант) и словарем { 'ru': ..., 'en': ... }.
+    # Раньше словарь приводился к строке и уезжал в XML как есть, вместо перевода.
+    if isinstance(text, dict):
+        ml_items = [(str(lang), str(content)) for lang, content in text.items()]
+    else:
+        ml_items = [('ru', str(text))]
     lines.append(f"{indent}<{tag}>")
-    lines.append(f"{indent}\t<v8:item>")
-    lines.append(f"{indent}\t\t<v8:lang>ru</v8:lang>")
-    lines.append(f"{indent}\t\t<v8:content>{esc_xml(text)}</v8:content>")
-    lines.append(f"{indent}\t</v8:item>")
+    for lang, content in ml_items:
+        lines.append(f"{indent}\t<v8:item>")
+        lines.append(f"{indent}\t\t<v8:lang>{lang}</v8:lang>")
+        lines.append(f"{indent}\t\t<v8:content>{esc_xml(content)}</v8:content>")
+        lines.append(f"{indent}\t</v8:item>")
     lines.append(f"{indent}</{tag}>")
 
 
@@ -1268,6 +1342,10 @@ def new_uuid():
 
 
 def write_utf8_bom(path, content):
+    # Исходники 1С хранятся в CRLF: этого ждет Конфигуратор, и это закреплено в .gitattributes.
+    # Сборка идет через '\n'.join, поэтому концы строк разворачиваются здесь, на записи.
+    # Нормализация идемпотентна - смешанный текст тоже приходит к одному виду.
+    content = content.replace('\r\n', '\n').replace('\n', '\r\n')
     with open(path, 'w', encoding='utf-8-sig', newline='') as f:
         f.write(content)
 
@@ -1416,7 +1494,7 @@ def emit_common_flags(lines, el, indent):
 
 def emit_title(lines, el, name, indent):
     if el.get('title'):
-        emit_mltext(lines, indent, 'Title', str(el['title']))
+        emit_mltext(lines, indent, 'Title', el['title'])
 
 
 # --- Type emitter ---
@@ -1983,7 +2061,7 @@ def emit_button(lines, el, name, eid, indent):
     # Picture
     if el.get('picture'):
         lines.append(f'{inner}<Picture>')
-        lines.append(f'{inner}\t<xr:Ref>{el["picture"]}</xr:Ref>')
+        lines.append(f'{inner}\t<xr:Ref>{resolve_picture_ref(el["picture"])}</xr:Ref>')
         lines.append(f'{inner}\t<xr:LoadTransparent>true</xr:LoadTransparent>')
         lines.append(f'{inner}</Picture>')
 
@@ -2009,7 +2087,7 @@ def emit_picture_decoration(lines, el, name, eid, indent):
     emit_common_flags(lines, el, inner)
 
     if el.get('picture') or el.get('src'):
-        ref = str(el.get('src') or el.get('picture'))
+        ref = resolve_picture_ref(el.get('src') or el.get('picture'))
         lines.append(f'{inner}<Picture>')
         lines.append(f'{inner}\t<xr:Ref>{ref}</xr:Ref>')
         lines.append(f'{inner}\t<xr:LoadTransparent>true</xr:LoadTransparent>')
@@ -2102,7 +2180,7 @@ def emit_popup(lines, el, name, eid, indent):
 
     if el.get('picture'):
         lines.append(f'{inner}<Picture>')
-        lines.append(f'{inner}\t<xr:Ref>{el["picture"]}</xr:Ref>')
+        lines.append(f'{inner}\t<xr:Ref>{resolve_picture_ref(el["picture"])}</xr:Ref>')
         lines.append(f'{inner}\t<xr:LoadTransparent>true</xr:LoadTransparent>')
         lines.append(f'{inner}</Picture>')
 
@@ -2134,7 +2212,7 @@ def emit_attributes(lines, attrs, indent):
         inner = f'{indent}\t\t'
 
         if attr.get('title'):
-            emit_mltext(lines, inner, 'Title', str(attr['title']))
+            emit_mltext(lines, inner, 'Title', attr['title'])
 
         # Type
         if attr.get('type'):
@@ -2156,7 +2234,7 @@ def emit_attributes(lines, attrs, indent):
                 col_id = new_id()
                 lines.append(f'{inner}\t<Column name="{col["name"]}" id="{col_id}">')
                 if col.get('title'):
-                    emit_mltext(lines, f'{inner}\t\t', 'Title', str(col['title']))
+                    emit_mltext(lines, f'{inner}\t\t', 'Title', col['title'])
                 emit_type(lines, str(col.get('type', '')), f'{inner}\t\t')
                 lines.append(f'{inner}\t</Column>')
             lines.append(f'{inner}</Columns>')
@@ -2211,7 +2289,7 @@ def emit_commands(lines, cmds, indent):
         inner = f'{indent}\t\t'
 
         if cmd.get('title'):
-            emit_mltext(lines, inner, 'Title', str(cmd['title']))
+            emit_mltext(lines, inner, 'Title', cmd['title'])
 
         if cmd.get('action'):
             lines.append(f'{inner}<Action>{cmd["action"]}</Action>')
@@ -2221,7 +2299,7 @@ def emit_commands(lines, cmds, indent):
 
         if cmd.get('picture'):
             lines.append(f'{inner}<Picture>')
-            lines.append(f'{inner}\t<xr:Ref>{cmd["picture"]}</xr:Ref>')
+            lines.append(f'{inner}\t<xr:Ref>{resolve_picture_ref(cmd["picture"])}</xr:Ref>')
             lines.append(f'{inner}\t<xr:LoadTransparent>true</xr:LoadTransparent>')
             lines.append(f'{inner}</Picture>')
 
@@ -2520,7 +2598,7 @@ def main():
                 json.dump(dsl, f, ensure_ascii=False, indent=2)
             print(f"[from-object] DSL saved: {dsl_path}")
 
-        defn = json.loads(json.dumps(dsl))  # normalize OrderedDict to regular dict
+        defn = lenient(json.loads(json.dumps(dsl)))  # normalize OrderedDict to regular dict
         # Convert dict-style elements (from generators) to list-style (expected by compiler)
         defn = _normalize_elements(defn)
     else:
@@ -2531,7 +2609,7 @@ def main():
             sys.exit(1)
 
         with open(json_path, 'r', encoding='utf-8-sig') as f:
-            defn = json.load(f)
+            defn = lenient(json.load(f))
 
     # --- 2. Main compilation ---
     _next_id = 0
@@ -2545,7 +2623,7 @@ def main():
     if not form_title and defn.get('properties') and defn['properties'].get('title'):
         form_title = defn['properties']['title']
     if form_title:
-        emit_mltext(lines, '\t', 'Title', str(form_title))
+        emit_mltext(lines, '\t', 'Title', form_title)
 
     # Properties (skip 'title' — handled above)
     if defn.get('properties'):

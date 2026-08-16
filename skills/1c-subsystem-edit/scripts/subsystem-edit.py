@@ -12,6 +12,81 @@ import uuid
 from lxml import etree
 
 
+class LenientDict(dict):
+    """Словарь, нечувствительный к регистру ключей - как PSObject в PowerShell.
+
+    Нужен для прощающего ввода: DSL принимает и `operation`, и `Operation`. Вложенные словари
+    оборачиваются тоже, иначе леность теряется на первом же уровне вложенности.
+    """
+
+    def __init__(self, data=None):
+        super().__init__()
+        for k, v in (data or {}).items():
+            self[k] = v
+
+    @staticmethod
+    def _wrap(v):
+        if isinstance(v, dict):
+            return LenientDict(v)
+        if isinstance(v, list):
+            return [LenientDict(x) if isinstance(x, dict) else x for x in v]
+        return v
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, self._wrap(value))
+
+    def _actual_key(self, key):
+        if super().__contains__(key):
+            return key
+        if isinstance(key, str):
+            low = key.lower()
+            for k in super().keys():
+                if isinstance(k, str) and k.lower() == low:
+                    return k
+        return None
+
+    def __getitem__(self, key):
+        k = self._actual_key(key)
+        if k is None:
+            raise KeyError(key)
+        return super().__getitem__(k)
+
+    def __contains__(self, key):
+        return self._actual_key(key) is not None
+
+    def get(self, key, default=None):
+        k = self._actual_key(key)
+        return super().__getitem__(k) if k is not None else default
+
+
+OPERATIONS = (
+    "add-content",
+    "remove-content",
+    "add-child",
+    "remove-child",
+    "set-property",
+)
+
+
+def _canon_op(name):
+    """Имя операции приводится к каноническому виду - switch в PowerShell сравнивает
+    без учета регистра, а python по умолчанию с учетом."""
+    low = str(name).lower()
+    for o in OPERATIONS:
+        if o.lower() == low:
+            return o
+    return name
+
+
+def lenient(data):
+    """JSON бывает объектом и массивом объектов - оборачиваем и то, и другое."""
+    if isinstance(data, list):
+        return [LenientDict(x) if isinstance(x, dict) else x for x in data]
+    return LenientDict(data) if isinstance(data, dict) else data
+
+
+
+
 def new_uuid():
     return str(uuid.uuid4())
 
@@ -21,6 +96,10 @@ def esc_xml(s):
 
 
 def write_utf8_bom(path, content):
+    # Исходники 1С хранятся в CRLF: этого ждет Конфигуратор, и это закреплено в .gitattributes.
+    # Сборка идет через '\n'.join, поэтому концы строк разворачиваются здесь, на записи.
+    # Нормализация идемпотентна - смешанный текст тоже приходит к одному виду.
+    content = content.replace('\r\n', '\n').replace('\n', '\r\n')
     with open(path, 'w', encoding='utf-8-sig', newline='') as f:
         f.write(content)
 
@@ -199,13 +278,13 @@ def insert_before_closing(container, new_el, child_indent):
     if len(children) == 0:
         # Empty element: set text to newline+indent, tail of new_el to newline+parent_indent
         parent_indent = child_indent[:-1] if len(child_indent) > 0 else ""
-        container.text = "\r\n" + child_indent
-        new_el.tail = "\r\n" + parent_indent
+        container.text = "\n" + child_indent
+        new_el.tail = "\n" + parent_indent
         container.append(new_el)
     else:
         last = children[-1]
         new_el.tail = last.tail
-        last.tail = "\r\n" + child_indent
+        last.tail = "\n" + child_indent
         container.append(new_el)
 
 
@@ -232,7 +311,7 @@ def remove_with_indent(el):
 def expand_self_closing(container, parent_indent):
     """If container is self-closing (no children, no text), add closing whitespace."""
     if len(container) == 0 and not (container.text and container.text.strip()):
-        container.text = "\r\n" + parent_indent
+        container.text = "\n" + parent_indent
 
 
 def import_fragment(xml_string, doc_root):
@@ -252,7 +331,7 @@ def parse_value_list(val):
     """Parse a string or JSON array into a list of strings."""
     val = val.strip()
     if val.startswith("["):
-        arr = json.loads(val)
+        arr = lenient(json.loads(val))
         return [str(item) for item in arr]
     return [val]
 
@@ -264,9 +343,19 @@ def save_xml_bom(tree, path):
     # альтернации и возвращаются как есть.
     xml_bytes = re.sub(rb'(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|(?<=\S) />',
                     lambda m: b'/>' if m.group(0) == b' />' else m.group(0), xml_bytes)
-    xml_bytes = xml_bytes.replace(b"<?xml version='1.0' encoding='UTF-8'?>", b'<?xml version="1.0" encoding="utf-8"?>')
-    if not xml_bytes.endswith(b"\n"):
-        xml_bytes += b"\n"
+    xml_bytes = xml_bytes.replace(b"<?xml version='1.0' encoding='UTF-8'?>", b'<?xml version="1.0" encoding="UTF-8"?>')
+    # Концы строк: XML-разбор нормализует CRLF в LF при чтении, поэтому разворачиваем обратно -
+    # исходники 1С хранятся в CRLF. Хвостового перевода платформа не пишет, замерено на выгрузках.
+    # Концы строк берутся из ФАЙЛА, который правим: объекты конфигурации хранятся в CRLF,
+    # схемы компоновки в LF. Форсировать один вид нельзя - навык испортит чужой формат.
+    # После разбора в байтах всегда LF: XML-разбор нормализует концы строк при чтении.
+    _orig = open(path, 'rb').read() if os.path.exists(path) else b''
+    if b'\r\n' in _orig:
+        xml_bytes = xml_bytes.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+    # Хвостовой перевод исходного файла тоже сохраняется: универсального правила нет,
+    # часть навыков его пишет, часть нет - правка не должна это менять.
+    if _orig.endswith(b'\n') and not xml_bytes.endswith(b'\n'):
+        xml_bytes += b'\r\n' if b'\r\n' in _orig else b'\n'
     with open(path, "wb") as f:
         f.write(b"\xef\xbb\xbf")
         f.write(xml_bytes)
@@ -475,8 +564,8 @@ def main():
 
     def do_set_property(json_val):
         nonlocal modify_count
-        prop_def = json.loads(json_val)
-        prop_name = str(prop_def["name"])
+        prop_def = lenient(json.loads(json_val))
+        prop_name = _canon_op(str(prop_def["name"]))
         prop_value = str(prop_def.get("value", ""))
 
         prop_el = None
@@ -519,11 +608,11 @@ def main():
                 content_el.text = prop_value
 
                 # Set whitespace
-                prop_el.text = "\r\n" + indent + "\t"
-                item_el.text = "\r\n" + indent + "\t\t"
-                lang_el.tail = "\r\n" + indent + "\t\t"
-                content_el.tail = "\r\n" + indent + "\t"
-                item_el.tail = "\r\n" + indent
+                prop_el.text = "\n" + indent + "\t"
+                item_el.text = "\n" + indent + "\t\t"
+                lang_el.tail = "\n" + indent + "\t\t"
+                content_el.tail = "\n" + indent + "\t"
+                item_el.tail = "\n" + indent
 
                 modify_count += 1
                 info(f'Set {prop_name} = "{prop_value}"')
@@ -551,9 +640,9 @@ def main():
                 ref_el.text = prop_value
                 load_el = etree.SubElement(prop_el, f"{{{XR_NS}}}LoadTransparent")
                 load_el.text = "false"
-                prop_el.text = "\r\n" + indent + "\t"
-                ref_el.tail = "\r\n" + indent + "\t"
-                load_el.tail = "\r\n" + indent
+                prop_el.text = "\n" + indent + "\t"
+                ref_el.tail = "\n" + indent + "\t"
+                load_el.tail = "\n" + indent
             modify_count += 1
             info(f'Set Picture = "{prop_value}"')
             return
@@ -572,7 +661,7 @@ def main():
         if not os.path.isabs(def_file):
             def_file = os.path.join(os.getcwd(), def_file)
         with open(def_file, "r", encoding="utf-8-sig") as fh:
-            ops = json.loads(fh.read())
+            ops = lenient(json.loads(fh.read()))
         if isinstance(ops, list):
             operations = ops
         else:
@@ -581,7 +670,7 @@ def main():
         operations = [{"operation": args.Operation, "value": args.Value or ""}]
 
     for op in operations:
-        op_name = op.get("operation", args.Operation or "")
+        op_name = _canon_op(op.get("operation", args.Operation or ""))
         op_value = op.get("value", args.Value or "")
 
         if op_name == "add-content":

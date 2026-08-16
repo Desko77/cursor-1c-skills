@@ -9,6 +9,84 @@ import sys
 import uuid
 
 
+class LenientDict(dict):
+    """Словарь, нечувствительный к регистру ключей - как PSObject в PowerShell.
+
+    Нужен для прощающего ввода: DSL принимает и `operation`, и `Operation`. Вложенные словари
+    оборачиваются тоже, иначе леность теряется на первом же уровне вложенности.
+    """
+
+    def __init__(self, data=None):
+        super().__init__()
+        for k, v in (data or {}).items():
+            self[k] = v
+
+    @staticmethod
+    def _wrap(v):
+        if isinstance(v, dict):
+            return LenientDict(v)
+        if isinstance(v, list):
+            return [LenientDict(x) if isinstance(x, dict) else x for x in v]
+        return v
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, self._wrap(value))
+
+    def _actual_key(self, key):
+        if super().__contains__(key):
+            return key
+        if isinstance(key, str):
+            low = key.lower()
+            for k in super().keys():
+                if isinstance(k, str) and k.lower() == low:
+                    return k
+        return None
+
+    def __getitem__(self, key):
+        k = self._actual_key(key)
+        if k is None:
+            raise KeyError(key)
+        return super().__getitem__(k)
+
+    def __contains__(self, key):
+        return self._actual_key(key) is not None
+
+    def get(self, key, default=None):
+        k = self._actual_key(key)
+        return super().__getitem__(k) if k is not None else default
+
+
+def _ps_scalar(value):
+    if isinstance(value, bool):
+        return 'True' if value else 'False'
+    if value is None:
+        return ''
+    return str(value)
+
+
+def ps_str(value):
+    """Приведение к строке по правилам PowerShell.
+
+    Замерено на pwsh 7: одиночный объект в "$x" дает @{k=v; k2=v2}, а массив склеивает через
+    пробел результаты ToString() элементов - и у разобранного из JSON объекта ToString() пуст.
+    В python str() дал бы repr списка, он и уезжал в XML.
+    """
+    if isinstance(value, (list, tuple)):
+        return ' '.join('' if isinstance(x, dict) else _ps_scalar(x) for x in value)
+    if isinstance(value, dict):
+        return '@{' + '; '.join(k + '=' + _ps_scalar(v) for k, v in value.items()) + '}'
+    return _ps_scalar(value)
+
+
+def lenient(data):
+    """JSON бывает объектом и массивом объектов - оборачиваем и то, и другое."""
+    if isinstance(data, list):
+        return [LenientDict(x) if isinstance(x, dict) else x for x in data]
+    return LenientDict(data) if isinstance(data, dict) else data
+
+
+
+
 def esc_xml(s):
     return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
@@ -40,11 +118,18 @@ def emit_mltext(lines, indent, tag, text):
     if not text:
         lines.append(f"{indent}<{tag}/>")
         return
+    # Значение бывает строкой (тогда это русский вариант) и словарем { 'ru': ..., 'en': ... }.
+    # Раньше словарь приводился к строке и уезжал в XML как есть, вместо перевода.
+    if isinstance(text, dict):
+        ml_items = [(str(lang), str(content)) for lang, content in text.items()]
+    else:
+        ml_items = [('ru', str(text))]
     lines.append(f'{indent}<{tag} xsi:type="v8:LocalStringType">')
-    lines.append(f"{indent}\t<v8:item>")
-    lines.append(f"{indent}\t\t<v8:lang>ru</v8:lang>")
-    lines.append(f"{indent}\t\t<v8:content>{esc_xml(text)}</v8:content>")
-    lines.append(f"{indent}\t</v8:item>")
+    for lang, content in ml_items:
+        lines.append(f"{indent}\t<v8:item>")
+        lines.append(f"{indent}\t\t<v8:lang>{lang}</v8:lang>")
+        lines.append(f"{indent}\t\t<v8:content>{esc_xml(content)}</v8:content>")
+        lines.append(f"{indent}\t</v8:item>")
     lines.append(f"{indent}</{tag}>")
 
 
@@ -53,6 +138,10 @@ def new_uuid():
 
 
 def write_utf8_bom(path, content):
+    # Исходники 1С хранятся в CRLF: этого ждет Конфигуратор, и это закреплено в .gitattributes.
+    # Сборка идет через '\n'.join, поэтому концы строк разворачиваются здесь, на записи.
+    # Нормализация идемпотентна - смешанный текст тоже приходит к одному виду.
+    content = content.replace('\r\n', '\n').replace('\n', '\r\n')
     with open(path, 'w', encoding='utf-8-sig', newline='') as f:
         f.write(content)
 
@@ -118,6 +207,8 @@ def resolve_type_str(type_str):
 def emit_value_type(lines, type_str, indent):
     if not type_str:
         return
+    # В PowerShell параметр объявлен как [string], и массив склеивается уже на границе вызова.
+    type_str = ps_str(type_str)
 
     # Resolve synonyms first
     type_str = resolve_type_str(type_str)
@@ -483,8 +574,8 @@ def emit_field(lines, field_def, indent):
         f = {
             'dataPath': str(field_def.get('dataPath', '')) or str(field_def.get('field', '')),
             'field': str(field_def.get('field', '')) or str(field_def.get('dataPath', '')),
-            'title': str(field_def.get('title', '')) if field_def.get('title') else '',
-            'type': resolve_type_str(str(field_def['type'])) if field_def.get('type') else '',
+            'title': field_def['title'] if field_def.get('title') else '',
+            'type': resolve_type_str(ps_str(field_def['type'])) if field_def.get('type') else '',
             'roles': [],
             'restrict': [],
             'appearance': {},
@@ -681,9 +772,9 @@ def emit_calc_fields(lines, defn):
             data_path = str(cf.get('dataPath') or cf.get('field') or cf.get('name') or '')
             expression = str(cf.get('expression', ''))
             if cf.get('title'):
-                title = str(cf['title'])
+                title = cf['title']
             if cf.get('type'):
-                type_str = resolve_type_str(str(cf['type']))
+                type_str = resolve_type_str(ps_str(cf['type']))
 
             restrict_val = cf.get('restrict') if cf.get('restrict') is not None else cf.get('useRestriction')
             if restrict_val:
@@ -806,11 +897,11 @@ def emit_single_param(lines, p, parsed):
     # a synonym — 1C UI labels a parameter's caption "Представление").
     title = ''
     if parsed.get('title'):
-        title = str(parsed['title'])
+        title = parsed['title']
     elif p is not None and not isinstance(p, str) and p.get('title'):
-        title = str(p['title'])
+        title = p['title']
     elif p is not None and not isinstance(p, str) and p.get('presentation'):
-        title = str(p['presentation'])
+        title = p['presentation']
     if title:
         emit_mltext(lines, '\t\t', 'title', title)
 
@@ -898,7 +989,7 @@ def emit_parameters(lines, defn):
         else:
             parsed = {
                 'name': str(p.get('name', '')),
-                'type': resolve_type_str(str(p['type'])) if p.get('type') else '',
+                'type': resolve_type_str(ps_str(p['type'])) if p.get('type') else '',
                 'value': p.get('value'),
                 'autoDates': False,
             }
@@ -1001,7 +1092,7 @@ def load_user_styles(base_dir, output_path=None):
     for p in search_paths:
         if os.path.isfile(p):
             with open(p, 'r', encoding='utf-8-sig') as f:
-                user_styles = json.load(f)
+                user_styles = lenient(json.load(f))
             for name, overrides in user_styles.items():
                 base = dict(AREA_STYLE_PRESETS.get(name, AREA_STYLE_PRESETS['data']))
                 base.update(overrides)
@@ -1807,13 +1898,8 @@ def emit_settings_variants(lines, defn):
         lines.append('\t<settingsVariant>')
         lines.append(f'\t\t<dcsset:name>{esc_xml(str(v["name"]))}</dcsset:name>')
 
-        pres = str(v.get('presentation', '')) or str(v.get('title', '')) or str(v['name'])
-        lines.append('\t\t<dcsset:presentation xsi:type="v8:LocalStringType">')
-        lines.append('\t\t\t<v8:item>')
-        lines.append('\t\t\t\t<v8:lang>ru</v8:lang>')
-        lines.append(f'\t\t\t\t<v8:content>{esc_xml(pres)}</v8:content>')
-        lines.append('\t\t\t</v8:item>')
-        lines.append('\t\t</dcsset:presentation>')
+        pres = v.get('presentation') or v.get('title') or str(v['name'])
+        emit_mltext(lines, '		', 'dcsset:presentation', pres)
 
         lines.append('\t\t<dcsset:settings xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows">')
 
@@ -1868,7 +1954,7 @@ def emit_settings_variants(lines, defn):
                         has_meaningful_value = True
                 elif ap.get('value') is not None and str(ap.get('value')) != '':
                     item['value'] = ap['value']
-                    item['valueType'] = str(ap.get('type') or '')
+                    item['valueType'] = ps_str(ap.get('type') or '')
                     has_meaningful_value = True
                 else:
                     item['nilValue'] = True
@@ -1925,7 +2011,7 @@ def main():
     else:
         json_text = args.Value
 
-    defn = json.loads(json_text)
+    defn = lenient(json.loads(json_text))
 
     if not defn.get('dataSets') or len(defn['dataSets']) == 0:
         print("JSON must have at least one entry in 'dataSets'", file=sys.stderr)
