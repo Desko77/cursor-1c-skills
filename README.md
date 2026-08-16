@@ -319,7 +319,7 @@ Copy-Item -Path commands\* -Destination .cursor\commands\ -Recurse -Force
 <tr><td><code>powershell-windows</code></td><td>PowerShell на Windows</td></tr>
 <tr><td><code>zup-hr-api-reference</code></td><td>Справочник API 1С:ЗУП 3.1: кадровый учет (физлица, стажи, договоры ГПХ, представления СКД) и расчет (средний заработок, начисления, пособия/СФР, взносы, отчетность)</td></tr>
 <tr><td><code>prompt-enhancer</code></td><td>Улучшение и структурирование коротких промптов и постановок задач в подробные ТЗ</td></tr>
-<tr><td><code>dehumanize-ai-text</code></td><td>Переписывание AI-текста в живой человеческий стиль</td></tr>
+<tr><td><code>humanize-ai-text</code></td><td>Переписывание AI-текста в живой человеческий стиль</td></tr>
 <tr><td><code>claude-md-bootstrap</code></td><td>Генерация файла-контекста проекта для AI-агента (CLAUDE.md)</td></tr>
 <tr><th colspan="2" align="left">Веб-публикация и тестирование (web-*)</th></tr>
 <tr><td><code>1c-web-publish</code></td><td>Публикация ИБ на веб-сервере (Apache/IIS)</td></tr>
