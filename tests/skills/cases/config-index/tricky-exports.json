@@ -1,0 +1,54 @@
+{
+  "name": "Экспортные методы разбираются на трудных заголовках",
+  "setup": "fixture:tricky-exports",
+  "params": {
+    "outFile": "index.json"
+  },
+  "noSnapshot": "эталон индекса закреплен кейсом sample-config; здесь проверяется разбор трудных заголовков метода и гашение комментариев вместе с литералами",
+  "expect": {
+    "fileContains": [
+      {
+        "file": "index.json",
+        "text": "\"СУрлом\""
+      },
+      {
+        "file": "index.json",
+        "text": "\"СоСкобкойВСтроке\""
+      },
+      {
+        "file": "index.json",
+        "text": "\"ПереносПеред\""
+      },
+      {
+        "file": "index.json",
+        "text": "\"Асинхронная\""
+      },
+      {
+        "file": "index.json",
+        "text": "\"ПослеКривогоКомментария\""
+      },
+      {
+        "file": "index.json",
+        "text": "\"СЛитераломВКоторомДвойнойСлеш\""
+      },
+      {
+        "file": "index.json",
+        "text": "\"СОбъявлениемВнутриЛитерала\""
+      }
+    ],
+    "fileNotContains": [
+      {
+        "file": "index.json",
+        "text": "\"НеЭкспортная\""
+      },
+      {
+        "file": "index.json",
+        "text": "\"ФальшивыйЭкспорт\""
+      },
+      {
+        "file": "index.json",
+        "text": "\"ЗакомментированныйЭкспорт\""
+      }
+    ]
+  }
+}

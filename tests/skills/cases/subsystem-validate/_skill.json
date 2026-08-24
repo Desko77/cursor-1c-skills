@@ -1,0 +1,21 @@
+{
+  "script": "subsystem-validate/scripts/subsystem-validate",
+  "setup": "empty-config",
+  "args": [
+    {
+      "flag": "-SubsystemPath",
+      "from": "workPath",
+      "field": "subsystemPath"
+    },
+    {
+      "flag": "-IndexPath",
+      "from": "workPath",
+      "field": "indexPath",
+      "optional": true
+    }
+  ],
+  "snapshot": {
+    "root": "workDir",
+    "normalizeUuids": true
+  }
+}
