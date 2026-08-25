@@ -5,6 +5,7 @@
 
 [![Лицензия MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Релиз](https://img.shields.io/github/v/release/Desko77/cursor-1c-skills)](https://github.com/Desko77/cursor-1c-skills/releases)
+[![Тесты](https://github.com/Desko77/cursor-1c-skills/actions/workflows/tests.yml/badge.svg)](https://github.com/Desko77/cursor-1c-skills/actions/workflows/tests.yml)
 
 Скилы дают агенту готовые операции над исходниками: собрать объект метаданных, форму, роль, схему
 компоновки, расширение, внешнюю обработку - и разобрать их обратно. Правила задают, как он это
