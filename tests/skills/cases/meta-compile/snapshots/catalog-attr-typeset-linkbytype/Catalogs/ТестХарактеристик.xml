@@ -293,7 +293,7 @@
 					<Synonym>
 						<v8:item>
 							<v8:lang>ru</v8:lang>
-							<v8:content>Любая ссылка иб</v8:content>
+							<v8:content>Любая ссылка ИБ</v8:content>
 						</v8:item>
 					</Synonym>
 					<Comment/>
@@ -338,8 +338,8 @@
 					</Synonym>
 					<Comment/>
 					<Type>
-						<v8:Type>DocumentRef</v8:Type>
-						<v8:Type>CatalogRef</v8:Type>
+						<v8:TypeSet>cfg:DocumentRef</v8:TypeSet>
+						<v8:TypeSet>cfg:CatalogRef</v8:TypeSet>
 					</Type>
 					<PasswordMode>false</PasswordMode>
 					<Format/>

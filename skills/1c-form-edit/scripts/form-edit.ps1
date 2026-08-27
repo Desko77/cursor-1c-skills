@@ -323,6 +323,11 @@ $script:formTypeSynonyms["определяемыйтип"]             = "Define
 function Resolve-TypeStr {
 	param([string]$typeStr)
 	if (-not $typeStr) { return $typeStr }
+	# Тип, скопированный из выгрузки, несет префикс пространства имен: cfg:, d5p1:, d4p1:.
+	# В описании он лишний - имя типа платформа читает без него.
+	# Срезается только префикс выгрузки конфигурации: схемные префиксы (v8:, xs:, v8ui:)
+	# часть имени типа, и без них тип не разрешается.
+	if ($typeStr -match '^(?:cfg|d\d+p\d+):(.+)$') { $typeStr = $Matches[1] }
 	if ($typeStr -match '^([^(]+)\((.+)\)$') {
 		$base = $Matches[1].Trim(); $params = $Matches[2]
 		$r = $script:formTypeSynonyms[$base.ToLower()]
@@ -1018,7 +1023,10 @@ if ($def.elements -and $def.elements.Count -gt 0) {
 			$elName = Get-ElementName -el $el -typeKey $typeKey
 			$existing = Find-Element $rootCI $elName
 			if ($existing) {
-				Write-Host "[WARN] Element '$elName' already exists in form (id=$($existing.GetAttribute('id')))"
+				# Имя элемента формы уникально: платформа второй такой не примет,
+				# а правка с предупреждением оставляла форму с двумя одинаковыми.
+				Write-Error "Элемент '$elName' в форме уже есть (id=$($existing.GetAttribute('id')))"
+				exit 1
 			}
 		}
 	}

@@ -11,8 +11,10 @@ param(
 		"add-dataSet","add-variant","add-conditionalAppearance","add-drilldown",
 		"set-query","patch-query","set-outputParameter","set-structure",
 		"modify-field","modify-filter","modify-dataParameter","modify-parameter",
+		"modify-structure",
 		"rename-parameter","reorder-parameters",
-		"clear-selection","clear-order","clear-filter",
+		"clear-selection","clear-order","clear-filter","clear-conditionalAppearance",
+		"set-field-role",
 		"remove-field","remove-total","remove-calculated-field","remove-parameter","remove-filter")]
 	[string]$Operation,
 
@@ -240,6 +242,11 @@ $script:outputParamTypes = @{
 function Resolve-TypeStr {
 	param([string]$typeStr)
 	if (-not $typeStr) { return $typeStr }
+	# Тип, скопированный из выгрузки, несет префикс пространства имен: cfg:, d5p1:, d4p1:.
+	# В описании он лишний - имя типа платформа читает без него.
+	# Срезается только префикс выгрузки конфигурации: схемные префиксы (v8:, xs:, v8ui:)
+	# часть имени типа, и без них тип не разрешается.
+	if ($typeStr -match '^(?:cfg|d\d+p\d+):(.+)$') { $typeStr = $Matches[1] }
 
 	if ($typeStr -match '^([^(]+)\((.+)\)$') {
 		$baseName = $Matches[1].Trim()
@@ -1407,6 +1414,13 @@ function Insert-BeforeElement($container, $newNode, $refNode, $childIndent) {
 	if ($refNode) {
 		$container.InsertBefore($ws, $refNode) | Out-Null
 		$container.InsertBefore($newNode, $ws) | Out-Null
+		# Отступ ставится и перед вставленным узлом: иначе он приклеивается к соседу слева.
+		$before = $newNode.PreviousSibling
+		if ($before -and ($before.NodeType -eq 'Whitespace' -or $before.NodeType -eq 'SignificantWhitespace')) {
+			$before.Data = "`r`n$childIndent"
+		} else {
+			$container.InsertBefore($xmlDoc.CreateWhitespace("`r`n$childIndent"), $newNode) | Out-Null
+		}
 	} else {
 		$trailing = $container.LastChild
 		if ($trailing -and ($trailing.NodeType -eq 'Whitespace' -or $trailing.NodeType -eq 'SignificantWhitespace')) {
@@ -1690,17 +1704,65 @@ function Get-ContainerChildIndent($container) {
 $xmlDoc = New-Object System.Xml.XmlDocument
 $xmlDoc.PreserveWhitespace = $true
 $xmlDoc.Load($resolvedPath)
+# Слепок документа ДО правок: по нему видно, изменила ли операция хоть что-нибудь. Сравнивать
+# с самим файлом нельзя - перезапись переносит объявления пространств имен на одну строку,
+# и нетронутый документ выглядел бы измененным.
+$beforeXml = $xmlDoc.OuterXml
 
 $schNs = "http://v8.1c.ru/8.1/data-composition-system/schema"
 $setNs = "http://v8.1c.ru/8.1/data-composition-system/settings"
 $corNs = "http://v8.1c.ru/8.1/data-composition-system/core"
+
+# Текст запроса ищется терпимо: переводы строк и неразрывные пробелы в поиске и в файле
+# приходят из разных редакторов, а расхождение по ним - не отличие самого текста.
+function Get-QueryProbe([string]$s) {
+	return $s.Replace("`r`n", "`n").Replace("`r", "`n").Replace([char]0x00a0, ' ').Replace([char]0x2007, ' ').Replace([char]0x202f, ' ')
+}
+
+# Длина самого длинного совпавшего начала: показывает, где искомое разошлось с текстом.
+function Get-QueryDivergencePoint([string]$haystack, [string]$needle) {
+	$best = 0
+	for ($start = 0; $start -lt $haystack.Length; $start++) {
+		$i = 0
+		while ($i -lt $needle.Length -and ($start + $i) -lt $haystack.Length -and
+			$haystack[$start + $i] -ceq $needle[$i]) { $i++ }
+		if ($i -gt $best) { $best = $i }
+		if ($best -eq $needle.Length) { break }
+	}
+	return $best
+}
+
+# Отказ поиска объясняется: пробелы, чужой набор данных или точка расхождения.
+function Get-QueryMissReport([string]$dsName, [string]$oldStr, [string]$queryText, $allDataSets) {
+	$probeQuery = Get-QueryProbe $queryText
+	$probeOld = Get-QueryProbe $oldStr
+	$lines = New-Object System.Collections.Generic.List[string]
+	[void]$lines.Add("Substring not found in query of dataset '$dsName': $oldStr")
+	if ($probeQuery.Contains($probeOld)) {
+		[void]$lines.Add("  Found after whitespace normalized: line breaks or non-breaking spaces differ")
+		return ($lines -join "`n")
+	}
+	foreach ($entry in $allDataSets) {
+		if ($entry.Name -ceq $dsName) { continue }
+		if ($entry.Text.Contains($oldStr) -or (Get-QueryProbe $entry.Text).Contains($probeOld)) {
+			[void]$lines.Add("  Found in dataset '$($entry.Name)' instead")
+			return ($lines -join "`n")
+		}
+	}
+	$point = Get-QueryDivergencePoint $probeQuery $probeOld
+	if ($point -gt 0) {
+		$tailLen = [Math]::Min(20, $probeOld.Length - $point)
+		[void]$lines.Add("  Search text diverged after $point chars: $($probeOld.Substring(0, $point))|$($probeOld.Substring($point, $tailLen))")
+	}
+	return ($lines -join "`n")
+}
 
 # --- 7. Batch value splitting ---
 
 if ($Operation -eq "set-query" -or $Operation -eq "set-structure" -or $Operation -eq "add-dataSet") {
 	$values = @($Value)
 } elseif ($Operation -eq "patch-query") {
-	$values = @($Value -split ';;' | Where-Object { $_.Trim() })
+	$values = @($Value -split ';;' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 } elseif ($Operation -eq "add-drilldown") {
 	if ($Value.Contains(';;')) {
 		$values = @($Value -split ';;' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
@@ -1725,7 +1787,7 @@ switch ($Operation) {
 			# Duplicate check
 			$existing = Find-ElementByChildValue $dsNode "field" "dataPath" $parsed.dataPath $schNs
 			if ($existing) {
-				Write-Host "[WARN] Field `"$($parsed.dataPath)`" already exists in dataset `"$dsName`" — skipped"
+				Write-Host "[WARN] Field `"$($parsed.dataPath)`" already exists in dataset `"$dsName`" - skipped"
 				continue
 			}
 
@@ -1745,7 +1807,7 @@ switch ($Operation) {
 				$selection = Ensure-SettingsChild $settings "selection" @()
 				$existingSel = Find-ElementByChildValue $selection "item" "field" $parsed.dataPath $setNs
 				if ($existingSel) {
-					Write-Host "[INFO] Field `"$($parsed.dataPath)`" already in selection — skipped"
+					Write-Host "[INFO] Field `"$($parsed.dataPath)`" already in selection - skipped"
 				} else {
 					$selIndent = Get-ContainerChildIndent $selection
 					$selXml = Build-SelectionItemFragment -fieldName $parsed.dataPath -indent $selIndent
@@ -1767,7 +1829,7 @@ switch ($Operation) {
 			# Duplicate check
 			$existing = Find-ElementByChildValue $xmlDoc.DocumentElement "totalField" "dataPath" $parsed.dataPath $schNs
 			if ($existing) {
-				Write-Host "[WARN] TotalField `"$($parsed.dataPath)`" already exists — skipped"
+				Write-Host "[WARN] TotalField `"$($parsed.dataPath)`" already exists - skipped"
 				continue
 			}
 
@@ -1801,7 +1863,7 @@ switch ($Operation) {
 			# Duplicate check
 			$existing = Find-ElementByChildValue $xmlDoc.DocumentElement "calculatedField" "dataPath" $parsed.dataPath $schNs
 			if ($existing) {
-				Write-Host "[WARN] CalculatedField `"$($parsed.dataPath)`" already exists — skipped"
+				Write-Host "[WARN] CalculatedField `"$($parsed.dataPath)`" already exists - skipped"
 				continue
 			}
 
@@ -1831,7 +1893,7 @@ switch ($Operation) {
 				$selection = Ensure-SettingsChild $settings "selection" @()
 				$existingSel = Find-ElementByChildValue $selection "item" "field" $parsed.dataPath $setNs
 				if ($existingSel) {
-					Write-Host "[INFO] Field `"$($parsed.dataPath)`" already in selection — skipped"
+					Write-Host "[INFO] Field `"$($parsed.dataPath)`" already in selection - skipped"
 				} else {
 					$selIndent = Get-ContainerChildIndent $selection
 					$selXml = Build-SelectionItemFragment -fieldName $parsed.dataPath -indent $selIndent
@@ -1853,7 +1915,7 @@ switch ($Operation) {
 			# Duplicate check
 			$existing = Find-ElementByChildValue $xmlDoc.DocumentElement "parameter" "name" $parsed.name $schNs
 			if ($existing) {
-				Write-Host "[WARN] Parameter `"$($parsed.name)`" already exists — skipped"
+				Write-Host "[WARN] Parameter `"$($parsed.name)`" already exists - skipped"
 				continue
 			}
 
@@ -1901,7 +1963,7 @@ switch ($Operation) {
 			# Find parameter element
 			$paramEl = Find-ElementByChildValue $xmlDoc.DocumentElement "parameter" "name" $paramName $schNs
 			if (-not $paramEl) {
-				Write-Host "[WARN] Parameter `"$paramName`" not found — skipped"
+				Write-Host "[WARN] Parameter `"$paramName`" not found - skipped"
 				continue
 			}
 
@@ -2036,7 +2098,7 @@ switch ($Operation) {
 			$newName = $Matches[2].Trim()
 
 			if ($oldName -eq $newName) {
-				Write-Host "[WARN] rename-parameter: old and new names are equal — skipped"
+				Write-Host "[WARN] rename-parameter: old and new names are equal - skipped"
 				continue
 			}
 
@@ -2044,7 +2106,7 @@ switch ($Operation) {
 			$root = $xmlDoc.DocumentElement
 			$paramEl = Find-ElementByChildValue $root "parameter" "name" $oldName $schNs
 			if (-not $paramEl) {
-				Write-Host "[WARN] Parameter `"$oldName`" not found — skipped"
+				Write-Host "[WARN] Parameter `"$oldName`" not found - skipped"
 				continue
 			}
 			foreach ($ch in $paramEl.ChildNodes) {
@@ -2107,7 +2169,7 @@ switch ($Operation) {
 			# Shorthand: "Name1, Name2, Name3" — partial list, listed names go first in order, rest preserve original order
 			$order = @($val -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 			if ($order.Count -eq 0) {
-				Write-Host "[WARN] reorder-parameters: empty list — skipped"
+				Write-Host "[WARN] reorder-parameters: empty list - skipped"
 				continue
 			}
 
@@ -2146,7 +2208,7 @@ switch ($Operation) {
 					$newOrder += $byName[$name]
 					$used[$name] = $true
 				} else {
-					Write-Host "[WARN] reorder-parameters: parameter `"$name`" not found — skipped"
+					Write-Host "[WARN] reorder-parameters: parameter `"$name`" not found - skipped"
 				}
 			}
 			foreach ($pe in $allParams) {
@@ -2164,6 +2226,8 @@ switch ($Operation) {
 			# Find anchor: element right after the last parameter in original order
 			$lastParam = $allParams[-1]
 			$anchor = $lastParam.NextSibling
+			# Опорой служит следующий элемент, а не пробельный узел между ними.
+			while ($anchor -and $anchor.NodeType -ne 'Element') { $anchor = $anchor.NextSibling }
 
 			# Remove all parameters with surrounding whitespace
 			foreach ($pe in $allParams) {
@@ -2239,13 +2303,13 @@ switch ($Operation) {
 					}
 				}
 				if ($isDup) {
-					Write-Host "[WARN] OrderItemAuto already exists in variant `"$varName`" — skipped"
+					Write-Host "[WARN] OrderItemAuto already exists in variant `"$varName`" - skipped"
 					continue
 				}
 			} else {
 				$existingOrd = Find-ElementByChildValue $orderEl "item" "field" $parsed.field $setNs
 				if ($existingOrd) {
-					Write-Host "[WARN] Order `"$($parsed.field)`" already exists in variant `"$varName`" — skipped"
+					Write-Host "[WARN] Order `"$($parsed.field)`" already exists in variant `"$varName`" - skipped"
 					continue
 				}
 			}
@@ -2306,7 +2370,7 @@ switch ($Operation) {
 				}
 				if ($isDup) {
 					$target = if ($groupName) { "group `"$groupName`"" } else { "variant `"$varName`"" }
-					Write-Host "[WARN] SelectedItemAuto already exists in $target — skipped"
+					Write-Host "[WARN] SelectedItemAuto already exists in $target - skipped"
 					continue
 				}
 			}
@@ -2350,7 +2414,22 @@ switch ($Operation) {
 			exit 1
 		}
 
+		$allDataSets = New-Object System.Collections.Generic.List[object]
+		foreach ($other in $xmlDoc.DocumentElement.SelectNodes("//*[local-name()='dataSet']")) {
+			$otherQuery = Find-FirstElement $other @("query") $schNs
+			if ($otherQuery) {
+				[void]$allDataSets.Add([pscustomobject]@{ Name = (Get-DataSetName $other); Text = $otherQuery.InnerText })
+			}
+		}
+
 		foreach ($val in $values) {
+			# Признак @once требует ровно одного вхождения: правка сразу по всем - частая
+			# причина испорченного запроса.
+			$once = $false
+			if ($val.EndsWith("@once")) {
+				$once = $true
+				$val = $val.Substring(0, $val.Length - 5).TrimEnd()
+			}
 			$sepIdx = $val.IndexOf(" => ")
 			if ($sepIdx -lt 0) {
 				Write-Error "patch-query value must contain ' => ' separator: old => new"
@@ -2360,8 +2439,23 @@ switch ($Operation) {
 			$newStr = $val.Substring($sepIdx + 4)
 			$queryText = $queryEl.InnerText
 			if (-not $queryText.Contains($oldStr)) {
-				Write-Error "Substring not found in query of dataset '$dsName': $oldStr"
-				exit 1
+				# Перевод строки в поиске и в файле бывает разным - это не отличие текста.
+				# Заменяющий текст приводится к тем же переводам, иначе правка внесет чужие.
+				$relaxed = $oldStr.Replace("`r`n", "`n").Replace("`r", "`n")
+				if ($queryText.Contains($relaxed)) {
+					$oldStr = $relaxed
+					$newStr = $newStr.Replace("`r`n", "`n").Replace("`r", "`n")
+				} else {
+					Write-Error (Get-QueryMissReport $dsName $oldStr $queryText $allDataSets)
+					exit 1
+				}
+			}
+			if ($once) {
+				$hits = ([regex]::Matches($queryText, [regex]::Escape($oldStr))).Count
+				if ($hits -ne 1) {
+					Write-Error "patch-query @once expected 1 occurrence of '$oldStr' in dataset '$dsName', found $hits"
+					exit 1
+				}
 			}
 			$queryEl.InnerText = $queryText.Replace($oldStr, $newStr)
 			Write-Host "[OK] Query patched in dataset `"$dsName`": replaced '$oldStr'"
@@ -2478,7 +2572,7 @@ switch ($Operation) {
 		# Duplicate check
 		$existing = Find-ElementByChildValue $root "dataSet" "name" $parsed.name $schNs
 		if ($existing) {
-			Write-Host "[WARN] DataSet `"$($parsed.name)`" already exists — skipped"
+			Write-Host "[WARN] DataSet `"$($parsed.name)`" already exists - skipped"
 		} else {
 			# Get dataSource name from first existing <dataSource>
 			$dsSourceEl = Find-FirstElement $root @("dataSource") $schNs
@@ -2531,7 +2625,7 @@ switch ($Operation) {
 				}
 			}
 			if ($isDup) {
-				Write-Host "[WARN] Variant `"$($parsed.name)`" already exists — skipped"
+				Write-Host "[WARN] Variant `"$($parsed.name)`" already exists - skipped"
 				continue
 			}
 
@@ -2580,6 +2674,78 @@ switch ($Operation) {
 		}
 	}
 
+	"set-field-role" {
+		$dsNode = Resolve-DataSet
+		$dsName = Get-DataSetName $dsNode
+		foreach ($val in $values) {
+			# Первое слово - имя поля, остальное - сама роль: признаки @имя и пары имя=значение.
+			$parts = $val -split '\s+', 2
+			$fieldName = $parts[0]
+			$roleSpec = if ($parts.Count -gt 1) { $parts[1].Trim() } else { '' }
+
+			$fieldEl = $null
+			foreach ($f in $dsNode.ChildNodes) {
+				if ($f.NodeType -ne 'Element' -or $f.LocalName -cne 'field') { continue }
+				$dp = Find-FirstElement $f @("dataPath") $schNs
+				if ($dp -and $dp.InnerText.Trim() -ceq $fieldName) { $fieldEl = $f; break }
+			}
+			if (-not $fieldEl) {
+				Write-Error "Field '$fieldName' not found in dataset '$dsName'"
+				exit 1
+			}
+
+			$existing = Find-FirstElement $fieldEl @("role") $schNs
+			if ($existing) { Remove-NodeWithWhitespace $existing }
+
+			# Пустая роль означает снятие: элемент role просто убирается.
+			if (-not $roleSpec) {
+				Write-Host "[OK] Role cleared on field `"$fieldName`" in dataset `"$dsName`""
+				continue
+			}
+
+			$flags = [regex]::Matches($roleSpec, '@(\w+)')
+			$pairs = [regex]::Matches($roleSpec, '(\w+)=([^\s]+)')
+			$fieldIndent = Get-ChildIndent $fieldEl
+			$itemIndent = $fieldIndent + "`t"
+			$fragLines = New-Object System.Collections.Generic.List[string]
+			[void]$fragLines.Add("$fieldIndent<role>")
+			foreach ($m in $flags) {
+				$flag = $m.Groups[1].Value
+				if ($flag -ceq 'period') {
+					[void]$fragLines.Add("$itemIndent<dcscom:periodNumber>1</dcscom:periodNumber>")
+					[void]$fragLines.Add("$itemIndent<dcscom:periodType>Main</dcscom:periodType>")
+				} else {
+					[void]$fragLines.Add("$itemIndent<dcscom:$flag>true</dcscom:$flag>")
+				}
+			}
+			foreach ($m in $pairs) {
+				$key = $m.Groups[1].Value
+				$pairValue = $m.Groups[2].Value
+				[void]$fragLines.Add("$itemIndent<dcscom:$key>$(Esc-Xml $pairValue)</dcscom:$key>")
+			}
+			[void]$fragLines.Add("$fieldIndent</role>")
+
+			$nodes = Import-Fragment $xmlDoc ($fragLines -join "`n")
+			$refNode = Find-FirstElement $fieldEl @("valueType", "appearance", "presentationExpression") $schNs
+			foreach ($node in $nodes) {
+				Insert-BeforeElement $fieldEl $node $refNode $fieldIndent
+			}
+			Write-Host "[OK] Role set on field `"$fieldName`" in dataset `"$dsName`": $roleSpec"
+		}
+	}
+
+	"clear-conditionalAppearance" {
+		$settings = Resolve-VariantSettings
+		$varName = Get-VariantName
+		$caEl = Find-FirstElement $settings @("conditionalAppearance") $setNs
+		if ($caEl) {
+			Clear-ContainerChildren $caEl
+			Write-Host "[OK] Conditional appearance cleared in variant `"$varName`""
+		} else {
+			Write-Host "[INFO] No conditionalAppearance section in variant `"$varName`""
+		}
+	}
+
 	"clear-selection" {
 		$settings = Resolve-VariantSettings
 		$varName = Get-VariantName
@@ -2613,6 +2779,71 @@ switch ($Operation) {
 			Write-Host "[OK] Filter cleared in variant `"$varName`""
 		} else {
 			Write-Host "[INFO] No filter section in variant `"$varName`""
+		}
+	}
+
+	"modify-structure" {
+		$settings = Resolve-VariantSettings
+		$varName = Get-VariantName
+		foreach ($val in $values) {
+			$structItems = Parse-StructureShorthand $val
+			if (-not $structItems -or $structItems.Count -eq 0) {
+				Write-Error "modify-structure value is empty: $val"
+				exit 1
+			}
+			$spec = $structItems[0]
+			$itemName = $spec.name
+			if (-not $itemName) {
+				Write-Error "modify-structure requires @name=<имя элемента структуры>"
+				exit 1
+			}
+
+			# Ищется элемент структуры с этим именем на любой глубине: остальное его наполнение
+			# (отбор, порядок, оформление) правка не трогает.
+			$target = $null
+			foreach ($node in $settings.SelectNodes(".//*[local-name()='item']")) {
+				$nameEl = Find-FirstElement $node @("name") $setNs
+				if ($nameEl -and $nameEl.InnerText.Trim() -ceq $itemName) { $target = $node; break }
+			}
+			if (-not $target) {
+				Write-Error "Structure item '$itemName' not found in variant '$varName'"
+				exit 1
+			}
+
+			$groupEl = Find-FirstElement $target @("groupItems") $setNs
+			$itemIndent = Get-ChildIndent $target
+			$fragLines = New-Object System.Collections.Generic.List[string]
+			$groupBy = @($spec.groupBy)
+			if ($groupBy.Count -eq 0) {
+				[void]$fragLines.Add("$itemIndent<dcsset:groupItems/>")
+			} else {
+				[void]$fragLines.Add("$itemIndent<dcsset:groupItems>")
+				foreach ($field in $groupBy) {
+					[void]$fragLines.Add("$itemIndent`t<dcsset:item xsi:type=`"dcsset:GroupItemField`">")
+					[void]$fragLines.Add("$itemIndent`t`t<dcsset:field>$(Esc-Xml $field)</dcsset:field>")
+					[void]$fragLines.Add("$itemIndent`t`t<dcsset:groupType>Items</dcsset:groupType>")
+					[void]$fragLines.Add("$itemIndent`t`t<dcsset:periodAdditionType>None</dcsset:periodAdditionType>")
+					[void]$fragLines.Add("$itemIndent`t`t<dcsset:periodAdditionBegin xsi:type=`"xs:dateTime`">0001-01-01T00:00:00</dcsset:periodAdditionBegin>")
+					[void]$fragLines.Add("$itemIndent`t`t<dcsset:periodAdditionEnd xsi:type=`"xs:dateTime`">0001-01-01T00:00:00</dcsset:periodAdditionEnd>")
+					[void]$fragLines.Add("$itemIndent`t</dcsset:item>")
+				}
+				[void]$fragLines.Add("$itemIndent</dcsset:groupItems>")
+			}
+
+			$refNode = $null
+			if ($groupEl) {
+				$refNode = $groupEl.NextSibling
+				while ($refNode -and $refNode.NodeType -ne 'Element') { $refNode = $refNode.NextSibling }
+				Remove-NodeWithWhitespace $groupEl
+			} else {
+				$refNode = Find-FirstElement $target @("order", "selection", "filter") $setNs
+			}
+
+			$nodes = Import-Fragment $xmlDoc ($fragLines -join "`n")
+			foreach ($node in $nodes) {
+				Insert-BeforeElement $target $node $refNode $itemIndent
+			}
+			Write-Host "[OK] Structure item `"$itemName`" regrouped in variant `"$varName`": $val"
 		}
 	}
 
@@ -2997,7 +3228,7 @@ switch ($Operation) {
 
 				# Idempotency: check if already exists
 				if ($tplText.Contains($drillName)) {
-					Write-Host "[INFO] $drillName already exists in $tplName — skipped"
+					Write-Host "[INFO] $drillName already exists in $tplName - skipped"
 					continue
 				}
 
@@ -3006,7 +3237,7 @@ switch ($Operation) {
 				if ($exprMap.ContainsKey($resource)) {
 					$paramName = $exprMap[$resource]
 				} else {
-					Write-Host "[WARN] Expression `"$resource`" not found in template $tplName — skipped"
+					Write-Host "[WARN] Expression `"$resource`" not found in template $tplName - skipped"
 					continue
 				}
 
@@ -3093,7 +3324,12 @@ $content = $content -replace '(?<=<\?xml[^?]*encoding=")utf-8(?=")', 'UTF-8'
 # CDATA/комментария или значения атрибута ` />` может быть содержимым,
 # поэтому они идут первыми ветками альтернации и возвращаются как есть.
 $content = [regex]::Replace($content, '(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|<([A-Za-z0-9_:.\-]+)((?:\s+[A-Za-z0-9_:.\-]+="[^"]*")*)\s+/>', { param($m) if ($m.Groups[1].Success) { '<' + $m.Groups[1].Value + $m.Groups[2].Value + '/>' } else { $m.Value } })
-$enc = New-Object System.Text.UTF8Encoding($true)
-[System.IO.File]::WriteAllText($resolvedPath, $content, $enc)
-
-Write-Host "[OK] Saved $resolvedPath"
+# Правка, ничего не изменившая, файл не трогает: перезапись сдвинула бы время и попала бы
+# в систему контроля версий пустым изменением.
+if ($xmlDoc.OuterXml -ceq $beforeXml) {
+	Write-Host "[OK] No changes -- file untouched"
+} else {
+	$enc = New-Object System.Text.UTF8Encoding($true)
+	[System.IO.File]::WriteAllText($resolvedPath, $content, $enc)
+	Write-Host "[OK] Saved $resolvedPath"
+}

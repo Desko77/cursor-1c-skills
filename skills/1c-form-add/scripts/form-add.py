@@ -251,6 +251,30 @@ def write_text_with_bom(path, text):
         f.write(text)
 
 
+PALETTE_NS = ' xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"'
+
+
+def format_version_rank(version):
+    """Версии сравниваются по составным частям: 2.9 старее, чем 2.21, хотя как число больше."""
+    m = re.match(r"^(\d+)\.(\d+)$", str(version or ""))
+    return int(m.group(1)) * 100 + int(m.group(2)) if m else 0
+
+
+def add_palette_ns(decl, format_version):
+    """Палитра появляется в шапке с формата 2.21 (8.5) и встает между lf и style."""
+    if format_version_rank(format_version) < 221:
+        return decl
+    lf = ' xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform"'
+    return decl.replace(lf, lf + PALETTE_NS, 1)
+
+
+# Признак сохраняемых данных ставится у объектов, которые платформа хранит в базе.
+# У обработки и отчета такого хранения нет - там его не пишут.
+PERSISTED_OBJECT_TYPES = ('Catalog', 'Document', 'ChartOfAccounts', 'ChartOfCharacteristicTypes',
+                          'ChartOfCalculationTypes', 'BusinessProcess', 'Task', 'ExchangePlan',
+                          'InformationRegister', 'AccumulationRegister')
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
@@ -287,7 +311,15 @@ def main():
         sys.exit(1)
 
     object_xml_full = os.path.abspath(object_path)
-    format_version = detect_format_version(os.path.dirname(object_xml_full))
+    # У автономной внешней обработки или отчета конфигурации нет, и версию формата задает
+    # описание самого объекта.
+    with open(object_xml_full, 'r', encoding='utf-8-sig', errors='replace') as fh:
+        owner_head = fh.read(2000)
+    owner_version = re.search(r'<MetaDataObject[^>]+version="(\d+\.\d+)"', owner_head)
+    if re.search(r'<(ExternalDataProcessor|ExternalReport)\s', owner_head) and owner_version:
+        format_version = owner_version.group(1)
+    else:
+        format_version = detect_format_version(os.path.dirname(object_xml_full))
 
     parser_xml = etree.XMLParser(remove_blank_text=False)
     tree = etree.parse(object_xml_full, parser_xml)
@@ -374,9 +406,7 @@ def main():
 
     form_uuid = str(uuid.uuid4())
 
-    form_meta_xml = (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"'
+    meta_ns_decl = add_palette_ns(
         ' xmlns:app="http://v8.1c.ru/8.2/managed-application/core"'
         ' xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config"'
         ' xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi"'
@@ -392,7 +422,16 @@ def main():
         ' xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef"'
         ' xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"'
         ' xmlns:xs="http://www.w3.org/2001/XMLSchema"'
-        ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+        ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"', format_version)
+
+    # Режим совместимости интерфейса форма получает начиная с формата 2.21.
+    compatibility_line = ('\t\t\t<UseInInterfaceCompatibilityMode>Any</UseInInterfaceCompatibilityMode>\n'
+                          if format_version_rank(format_version) >= 221 else '')
+
+    form_meta_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"'
+        + meta_ns_decl +
         f' version="{format_version}">\n'
         f'\t<Form uuid="{form_uuid}">\n'
         '\t\t<Properties>\n'
@@ -410,6 +449,7 @@ def main():
         '\t\t\t\t<v8:Value xsi:type="app:ApplicationUsePurpose">PlatformApplication</v8:Value>\n'
         '\t\t\t\t<v8:Value xsi:type="app:ApplicationUsePurpose">MobilePlatformApplication</v8:Value>\n'
         '\t\t\t</UsePurposes>\n'
+        + compatibility_line
         + ('\t\t\t<ExtendedPresentation/>\n' if object_type in processor_like_types else '')
         + '\t\t</Properties>\n'
         '\t</Form>\n'
@@ -422,7 +462,7 @@ def main():
 
     form_xml_path = os.path.join(form_ext_dir, "Form.xml")
 
-    form_ns_decl = (
+    form_ns_decl = add_palette_ns(
         'xmlns="http://v8.1c.ru/8.3/xcf/logform"'
         ' xmlns:app="http://v8.1c.ru/8.2/managed-application/core"'
         ' xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config"'
@@ -438,7 +478,7 @@ def main():
         ' xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows"'
         ' xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"'
         ' xmlns:xs="http://www.w3.org/2001/XMLSchema"'
-        ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+        ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"', format_version
     )
 
     if purpose in ("List", "Choice"):
@@ -451,9 +491,6 @@ def main():
             '\t<AutoCommandBar name="\u0424\u043e\u0440\u043c\u0430\u041a\u043e\u043c\u0430\u043d\u0434\u043d\u0430\u044f\u041f\u0430\u043d\u0435\u043b\u044c" id="-1">\n'
             '\t\t<Autofill>true</Autofill>\n'
             '\t</AutoCommandBar>\n'
-            '\t<Events>\n'
-            '\t\t<Event name="OnCreateAtServer">\u041f\u0440\u0438\u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0438\u041d\u0430\u0421\u0435\u0440\u0432\u0435\u0440\u0435</Event>\n'
-            '\t</Events>\n'
             '\t<ChildItems/>\n'
             '\t<Attributes>\n'
             '\t\t<Attribute name="\u0421\u043f\u0438\u0441\u043e\u043a" id="1">\n'
@@ -474,15 +511,13 @@ def main():
         main_attr_name = "\u0417\u0430\u043f\u0438\u0441\u044c"
         main_attr_type = f"InformationRegisterRecordManager.{object_name}"
 
+        saved_data = object_type in PERSISTED_OBJECT_TYPES
         form_xml = (
             f'<?xml version="1.0" encoding="UTF-8"?>\n'
             f'<Form {form_ns_decl} version="{format_version}">\n'
             '\t<AutoCommandBar name="\u0424\u043e\u0440\u043c\u0430\u041a\u043e\u043c\u0430\u043d\u0434\u043d\u0430\u044f\u041f\u0430\u043d\u0435\u043b\u044c" id="-1">\n'
             '\t\t<Autofill>true</Autofill>\n'
             '\t</AutoCommandBar>\n'
-            '\t<Events>\n'
-            '\t\t<Event name="OnCreateAtServer">\u041f\u0440\u0438\u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0438\u041d\u0430\u0421\u0435\u0440\u0432\u0435\u0440\u0435</Event>\n'
-            '\t</Events>\n'
             '\t<ChildItems/>\n'
             '\t<Attributes>\n'
             f'\t\t<Attribute name="{main_attr_name}" id="1">\n'
@@ -490,10 +525,10 @@ def main():
             f'\t\t\t\t<v8:Type>cfg:{main_attr_type}</v8:Type>\n'
             '\t\t\t</Type>\n'
             '\t\t\t<MainAttribute>true</MainAttribute>\n'
-            '\t\t\t<SavedData>true</SavedData>\n'
-            '\t\t</Attribute>\n'
-            '\t</Attributes>\n'
-            '</Form>'
+            + ('\t\t\t<SavedData>true</SavedData>\n' if saved_data else '')
+            + '\t\t</Attribute>\n'
+            + '\t</Attributes>\n'
+            + '</Form>'
         )
 
     else:
@@ -518,15 +553,13 @@ def main():
 
         main_attr_type = f"{attr_type_map[object_type]}.{object_name}"
 
+        saved_data = object_type in PERSISTED_OBJECT_TYPES
         form_xml = (
             f'<?xml version="1.0" encoding="UTF-8"?>\n'
             f'<Form {form_ns_decl} version="{format_version}">\n'
             '\t<AutoCommandBar name="\u0424\u043e\u0440\u043c\u0430\u041a\u043e\u043c\u0430\u043d\u0434\u043d\u0430\u044f\u041f\u0430\u043d\u0435\u043b\u044c" id="-1">\n'
             '\t\t<Autofill>true</Autofill>\n'
             '\t</AutoCommandBar>\n'
-            '\t<Events>\n'
-            '\t\t<Event name="OnCreateAtServer">\u041f\u0440\u0438\u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0438\u041d\u0430\u0421\u0435\u0440\u0432\u0435\u0440\u0435</Event>\n'
-            '\t</Events>\n'
             '\t<ChildItems/>\n'
             '\t<Attributes>\n'
             f'\t\t<Attribute name="{main_attr_name}" id="1">\n'
@@ -534,10 +567,10 @@ def main():
             f'\t\t\t\t<v8:Type>cfg:{main_attr_type}</v8:Type>\n'
             '\t\t\t</Type>\n'
             '\t\t\t<MainAttribute>true</MainAttribute>\n'
-            '\t\t\t<SavedData>true</SavedData>\n'
-            '\t\t</Attribute>\n'
-            '\t</Attributes>\n'
-            '</Form>'
+            + ('\t\t\t<SavedData>true</SavedData>\n' if saved_data else '')
+            + '\t\t</Attribute>\n'
+            + '\t</Attributes>\n'
+            + '</Form>'
         )
 
     if os.path.exists(form_xml_path):
@@ -551,11 +584,6 @@ def main():
 
     module_bsl = (
         '#\u041e\u0431\u043b\u0430\u0441\u0442\u044c \u041e\u0431\u0440\u0430\u0431\u043e\u0442\u0447\u0438\u043a\u0438\u0421\u043e\u0431\u044b\u0442\u0438\u0439\u0424\u043e\u0440\u043c\u044b\n'
-        '\n'
-        '&\u041d\u0430\u0421\u0435\u0440\u0432\u0435\u0440\u0435\n'
-        '\u041f\u0440\u043e\u0446\u0435\u0434\u0443\u0440\u0430 \u041f\u0440\u0438\u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0438\u041d\u0430\u0421\u0435\u0440\u0432\u0435\u0440\u0435(\u041e\u0442\u043a\u0430\u0437, \u0421\u0442\u0430\u043d\u0434\u0430\u0440\u0442\u043d\u0430\u044f\u041e\u0431\u0440\u0430\u0431\u043e\u0442\u043a\u0430)\n'
-        '\n'
-        '\u041a\u043e\u043d\u0435\u0446\u041f\u0440\u043e\u0446\u0435\u0434\u0443\u0440\u044b\n'
         '\n'
         '#\u041a\u043e\u043d\u0435\u0446\u041e\u0431\u043b\u0430\u0441\u0442\u0438\n'
         '\n'
@@ -589,6 +617,12 @@ def main():
         print(f"Не найден элемент ChildObjects в {object_path}", file=sys.stderr)
         sys.exit(1)
 
+    # Форму мог зарегистрировать form-compile: второй такой элемент платформа не примет.
+    already_registered = any(
+        isinstance(child.tag, str) and etree.QName(child.tag).localname == 'Form'
+        and (child.text or '').strip() == form_name
+        for child in child_objects)
+
     # Add <Form>$FormName</Form>
     form_elem = etree.Element(f"{{{ns}}}Form")
     form_elem.text = form_name
@@ -605,7 +639,9 @@ def main():
     elif first_tabular is not None:
         insert_before = first_tabular
 
-    if insert_before is not None:
+    if already_registered:
+        pass
+    elif insert_before is not None:
         # Insert before the found element
         idx = list(child_objects).index(insert_before)
         child_objects.insert(idx, form_elem)
@@ -674,7 +710,10 @@ def main():
     print(f"  Form:     {obj_dir_name}\\{obj_base_name}\\Forms\\{form_name}\\Ext\\Form.xml")
     print(f"  Module:   {obj_dir_name}\\{obj_base_name}\\Forms\\{form_name}\\Ext\\Form\\Module.bsl")
     print()
-    print(f"Registered: <Form>{form_name}</Form> in ChildObjects")
+    if already_registered:
+        print(f"Already registered: <Form>{form_name}</Form> in ChildObjects")
+    else:
+        print(f"Registered: <Form>{form_name}</Form> in ChildObjects")
     if default_updated:
         print(f"{default_prop_name}: {default_value}")
     print()

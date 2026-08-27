@@ -146,6 +146,11 @@ function Assert-EditAllowed([string]$targetPath, [string]$require) {
 	} catch { return }
 }
 # --- Конец общего блока гарда поддержки ---
+
+# Объекты, которые платформа хранит в базе: у их формы основной реквизит несет признак
+# сохраняемых данных. У обработки и отчета такого хранения нет.
+$script:persistedObjectTypes = @("Catalog","Document","ChartOfAccounts","ChartOfCharacteristicTypes","ChartOfCalculationTypes","BusinessProcess","Task","ExchangePlan","InformationRegister","AccumulationRegister")
+
 $ErrorActionPreference = "Stop"
 
 # --- Detect XML format version ---
@@ -186,7 +191,15 @@ if (-not (Test-Path $ObjectPath)) {
 
 $objectXmlFull = Resolve-Path $ObjectPath
 Assert-EditAllowed $objectXmlFull "editable"
-$script:formatVersion = Detect-FormatVersion (Split-Path $objectXmlFull.Path -Parent)
+# У автономной внешней обработки или отчета конфигурации нет, и версию формата задает
+# описание самого объекта.
+$ownerHead = [System.IO.File]::ReadAllText($objectXmlFull.Path, [System.Text.Encoding]::UTF8)
+$ownerHead = $ownerHead.Substring(0, [Math]::Min(2000, $ownerHead.Length))
+if ($ownerHead -match "<(ExternalDataProcessor|ExternalReport)\s" -and $ownerHead -match '<MetaDataObject[^>]+version="(\d+\.\d+)"') {
+	$script:formatVersion = $Matches[1]
+} else {
+	$script:formatVersion = Detect-FormatVersion (Split-Path $objectXmlFull.Path -Parent)
+}
 
 $xmlDoc = New-Object System.Xml.XmlDocument
 $xmlDoc.PreserveWhitespace = $true
@@ -309,9 +322,34 @@ if ($objectType -in $processorLikeTypes) {
 	$extPresentationLine = "`n`t`t`t<ExtendedPresentation/>"
 }
 
+# Палитра появляется в шапке с формата 2.21 (8.5) и встает между lf и style.
+# Версии формата сравниваются по составным частям, а не как десятичная дробь:
+# 2.9 старее, чем 2.21, хотя как число больше.
+function Get-FormatVersionRank {
+	param([string]$Version)
+	if ($Version -match '^(\d+)\.(\d+)$') { return [int]$Matches[1] * 100 + [int]$Matches[2] }
+	return 0
+}
+
+function Add-PaletteNs {
+	param([string]$decl)
+	if ((Get-FormatVersionRank $script:formatVersion) -lt 221) { return $decl }
+	return $decl.Replace(
+		'xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style=',
+		'xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style=')
+}
+
+$metaNsDecl = Add-PaletteNs 'xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+
+# Режим совместимости интерфейса форма получает начиная с формата 2.21.
+$compatibilityLine = ""
+if ((Get-FormatVersionRank $script:formatVersion) -ge 221) {
+	$compatibilityLine = "`n`t`t`t<UseInInterfaceCompatibilityMode>Any</UseInInterfaceCompatibilityMode>"
+}
+
 $formMetaXml = @"
 <?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="$($script:formatVersion)">
+<MetaDataObject $metaNsDecl version="$($script:formatVersion)">
 	<Form uuid="$formUuid">
 		<Properties>
 			<Name>$FormName</Name>
@@ -327,7 +365,7 @@ $formMetaXml = @"
 			<UsePurposes>
 				<v8:Value xsi:type="app:ApplicationUsePurpose">PlatformApplication</v8:Value>
 				<v8:Value xsi:type="app:ApplicationUsePurpose">MobilePlatformApplication</v8:Value>
-			</UsePurposes>$extPresentationLine
+			</UsePurposes>$compatibilityLine$extPresentationLine
 		</Properties>
 	</Form>
 </MetaDataObject>
@@ -339,7 +377,7 @@ $formMetaXml = @"
 
 $formXmlPath = Join-Path $formExtDir "Form.xml"
 
-$formNsDecl = 'xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+$formNsDecl = Add-PaletteNs 'xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
 
 if ($Purpose -eq "List" -or $Purpose -eq "Choice") {
 	# Динамический список
@@ -352,9 +390,6 @@ if ($Purpose -eq "List" -or $Purpose -eq "Choice") {
 	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1">
 		<Autofill>true</Autofill>
 	</AutoCommandBar>
-	<Events>
-		<Event name="OnCreateAtServer">ПриСозданииНаСервере</Event>
-	</Events>
 	<ChildItems/>
 	<Attributes>
 		<Attribute name="Список" id="1">
@@ -374,23 +409,24 @@ if ($Purpose -eq "List" -or $Purpose -eq "Choice") {
 	$mainAttrName = "Запись"
 	$mainAttrType = "InformationRegisterRecordManager.$objectName"
 
+	# Признак сохраняемых данных ставится у объектов, которые платформа хранит в базе.
+	# У обработки и отчета такого хранения нет - там его не пишут.
+	$savedDataLine = if ($script:persistedObjectTypes -contains $objectType) {
+		"`r`n			<SavedData>true</SavedData>"
+	} else { "" }
 	$formXml = @"
 <?xml version="1.0" encoding="UTF-8"?>
 <Form $formNsDecl version="$($script:formatVersion)">
 	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1">
 		<Autofill>true</Autofill>
 	</AutoCommandBar>
-	<Events>
-		<Event name="OnCreateAtServer">ПриСозданииНаСервере</Event>
-	</Events>
 	<ChildItems/>
 	<Attributes>
 		<Attribute name="$mainAttrName" id="1">
 			<Type>
 				<v8:Type>cfg:$mainAttrType</v8:Type>
 			</Type>
-			<MainAttribute>true</MainAttribute>
-			<SavedData>true</SavedData>
+			<MainAttribute>true</MainAttribute>$savedDataLine
 		</Attribute>
 	</Attributes>
 </Form>
@@ -418,23 +454,24 @@ if ($Purpose -eq "List" -or $Purpose -eq "Choice") {
 
 	$mainAttrType = "$($attrTypeMap[$objectType]).$objectName"
 
+	# Признак сохраняемых данных ставится у объектов, которые платформа хранит в базе.
+	# У обработки и отчета такого хранения нет - там его не пишут.
+	$savedDataLine = if ($script:persistedObjectTypes -contains $objectType) {
+		"`r`n			<SavedData>true</SavedData>"
+	} else { "" }
 	$formXml = @"
 <?xml version="1.0" encoding="UTF-8"?>
 <Form $formNsDecl version="$($script:formatVersion)">
 	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1">
 		<Autofill>true</Autofill>
 	</AutoCommandBar>
-	<Events>
-		<Event name="OnCreateAtServer">ПриСозданииНаСервере</Event>
-	</Events>
 	<ChildItems/>
 	<Attributes>
 		<Attribute name="$mainAttrName" id="1">
 			<Type>
 				<v8:Type>cfg:$mainAttrType</v8:Type>
 			</Type>
-			<MainAttribute>true</MainAttribute>
-			<SavedData>true</SavedData>
+			<MainAttribute>true</MainAttribute>$savedDataLine
 		</Attribute>
 	</Attributes>
 </Form>
@@ -453,11 +490,6 @@ $modulePath = Join-Path $formModuleDir "Module.bsl"
 
 $moduleBsl = @"
 #Область ОбработчикиСобытийФормы
-
-&НаСервере
-Процедура ПриСозданииНаСервере(Отказ, СтандартнаяОбработка)
-
-КонецПроцедуры
 
 #КонецОбласти
 
@@ -493,6 +525,13 @@ if (-not $childObjects) {
 }
 
 # Добавить <Form>$FormName</Form>
+# Форму мог зарегистрировать form-compile: второй такой элемент платформа не примет.
+$alreadyRegistered = $false
+foreach ($existing in $childObjects.ChildNodes) {
+	if ($existing.NodeType -eq 'Element' -and $existing.LocalName -eq 'Form' -and
+		$existing.InnerText.Trim() -eq $FormName) { $alreadyRegistered = $true }
+}
+
 $formElem = $xmlDoc.CreateElement("Form", "http://v8.1c.ru/8.3/MDClasses")
 $formElem.InnerText = $FormName
 
@@ -509,7 +548,8 @@ if ($firstTemplate) {
 	$insertBefore = $firstTabular
 }
 
-if ($insertBefore) {
+if ($alreadyRegistered) {
+} elseif ($insertBefore) {
 	# Вставить перед найденным элементом, с переносом строки
 	$whitespace = $xmlDoc.CreateWhitespace("`n`t`t`t")
 	$childObjects.InsertBefore($formElem, $insertBefore) | Out-Null
@@ -621,7 +661,11 @@ Write-Host "  Metadata: $objDirName\$objBaseName\Forms\$FormName.xml"
 Write-Host "  Form:     $objDirName\$objBaseName\Forms\$FormName\Ext\Form.xml"
 Write-Host "  Module:   $objDirName\$objBaseName\Forms\$FormName\Ext\Form\Module.bsl"
 Write-Host ""
-Write-Host "Registered: <Form>$FormName</Form> in ChildObjects"
+if ($alreadyRegistered) {
+	Write-Host "Already registered: <Form>$FormName</Form> in ChildObjects"
+} else {
+	Write-Host "Registered: <Form>$FormName</Form> in ChildObjects"
+}
 if ($defaultUpdated) {
 	Write-Host "${defaultPropName}: $defaultValue"
 }

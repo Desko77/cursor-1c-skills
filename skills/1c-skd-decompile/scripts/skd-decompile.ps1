@@ -118,9 +118,8 @@ function Get-MlText($el, $todoNode) {
 		$lang = (Get-Text (Get-Kid $it 'lang')).Trim()
 		$langs[$lang] = Get-Text (Get-Kid $it 'content')
 	}
-	if ($langs.Count -gt 1 -and $null -ne $todoNode) {
-		Add-Todo $todoNode 'многоязычный текст: сохранен только ru'
-	}
+	# Многоязычный текст возвращается объектом "язык: текст": одноязычный - строкой.
+	if ($langs.Count -gt 1) { return $langs }
 	if ($langs.Contains('ru')) { return $langs['ru'] }
 	foreach ($v in $langs.Values) { return $v }
 	return ''
@@ -148,19 +147,25 @@ function Get-TypeShorthand($vtEl, $node) {
 	}
 	if ($types.Count -eq 0) { return $null }
 	if ($types.Count -gt 1) {
-		$names = New-Object System.Collections.Generic.List[object]
-		foreach ($t in $types) { [void]$names.Add((Get-Text $t).Trim()) }
-		Add-Todo $node ('составной тип не поддержан: ' + ($names -join ', '))
-		return $null
+		# Составной тип - список: каждый его тип разбирается тем же кодом, что и одиночный.
+		$parts = New-Object System.Collections.Generic.List[object]
+		foreach ($one in $types) {
+			[void]$parts.Add((Get-OneTypeShorthand $one $vtEl $node))
+		}
+		return $parts
 	}
-	$raw = (Get-Text $types[0]).Trim()
+	return Get-OneTypeShorthand $types[0] $vtEl $node
+}
+
+function Get-OneTypeShorthand($typeEl, $vtEl, $node) {
+	$raw = (Get-Text $typeEl).Trim()
 	$uri = ''
 	$loc = $raw
 	if ($raw.Contains(':')) {
 		$idx = $raw.IndexOf(':')
 		$pfx = $raw.Substring(0, $idx)
 		$loc = $raw.Substring($idx + 1)
-		$uri = [string]$types[0].GetNamespaceOfPrefix($pfx)
+		$uri = [string]$typeEl.GetNamespaceOfPrefix($pfx)
 	}
 	if ($uri -ceq $script:UriCfg) { return $loc }
 	if ($loc -ceq 'StandardPeriod') { return 'StandardPeriod' }
@@ -174,11 +179,10 @@ function Get-TypeShorthand($vtEl, $node) {
 		if ($null -eq $q) { return 'string' }
 		$length = (Get-Text (Get-Kid $q 'Length')).Trim()
 		if ($length -ceq '') { $length = '0' }
+		# Фиксированная длина записывается признаком fix рядом с самой длиной.
 		$allowed = (Get-Text (Get-Kid $q 'AllowedLength')).Trim()
-		if ($allowed -cne '' -and $allowed -cne 'Variable') {
-			Add-Todo $node ('StringQualifiers AllowedLength=' + $allowed + ' не поддержан (принят Variable)')
-		}
 		if ($length -ceq '0') { return 'string' }
+		if ($allowed -ceq 'Fixed') { return 'string(' + $length + ',fix)' }
 		return 'string(' + $length + ')'
 	}
 	if ($loc -ceq 'decimal') {
@@ -188,9 +192,11 @@ function Get-TypeShorthand($vtEl, $node) {
 		if ($digits -ceq '') { $digits = '0' }
 		$frac = (Get-Text (Get-Kid $q 'FractionDigits')).Trim()
 		if ($frac -ceq '') { $frac = '0' }
+		# Нулевая дробная часть - умолчание, в запись она не идет.
 		$sign = (Get-Text (Get-Kid $q 'AllowedSign')).Trim()
-		if ($sign -ceq 'Nonnegative') { return 'decimal(' + $digits + ',' + $frac + ',nonneg)' }
-		return 'decimal(' + $digits + ',' + $frac + ')'
+		$parts = if ($frac -ceq '0') { $digits } else { $digits + ',' + $frac }
+		if ($sign -ceq 'Nonnegative') { return 'decimal(' + $parts + ',nonneg)' }
+		return 'decimal(' + $parts + ')'
 	}
 	if ($loc -ceq 'dateTime') {
 		$q = Get-Kid $vtEl 'DateQualifiers'
@@ -202,6 +208,58 @@ function Get-TypeShorthand($vtEl, $node) {
 		return 'dateTime'
 	}
 	return $raw
+}
+
+# Параметры ввода поля: параметры выбора, связи параметров выбора и простое значение.
+function Get-InputParameters($fieldEl) {
+	$ipEl = Get-Kid $fieldEl 'inputParameters'
+	if ($null -eq $ipEl) { return @() }
+	$items = New-Object System.Collections.Generic.List[object]
+	foreach ($item in $ipEl.ChildNodes) {
+		if ($item.NodeType -ne 'Element' -or $item.LocalName -cne 'item') { continue }
+		# Имя параметра идет первым ключом: в файле признак использования стоит раньше,
+		# но в описании читается имя, а не служебный флаг.
+		$entry = [ordered]@{ parameter = (Get-Text (Get-Kid $item 'parameter')) }
+		$useEl = Get-Kid $item 'use'
+		if ($null -ne $useEl -and (Get-Text $useEl).Trim() -ceq 'false') { $entry['use'] = $false }
+		$valueEl = Get-Kid $item 'value'
+		if ($null -eq $valueEl) { [void]$items.Add($entry); continue }
+		$xsiType = $valueEl.GetAttribute('type', 'http://www.w3.org/2001/XMLSchema-instance')
+		$kind = ($xsiType -split ':')[-1]
+		if ($kind -ceq 'ChoiceParameters') {
+			$params = New-Object System.Collections.Generic.List[object]
+			foreach ($sub in $valueEl.ChildNodes) {
+				if ($sub.NodeType -ne 'Element' -or $sub.LocalName -cne 'item') { continue }
+				$values = New-Object System.Collections.Generic.List[string]
+				foreach ($v in $sub.ChildNodes) {
+					if ($v.NodeType -eq 'Element' -and $v.LocalName -ceq 'value') { [void]$values.Add((Get-Text $v)) }
+				}
+				[void]$params.Add([ordered]@{ name = (Get-Text (Get-Kid $sub 'choiceParameter')); values = $values.ToArray() })
+			}
+			$entry['choiceParameters'] = $params.ToArray()
+		} elseif ($kind -ceq 'ChoiceParameterLinks') {
+			$links = New-Object System.Collections.Generic.List[object]
+			foreach ($sub in $valueEl.ChildNodes) {
+				if ($sub.NodeType -ne 'Element' -or $sub.LocalName -cne 'item') { continue }
+				$mode = Get-Text (Get-Kid $sub 'mode')
+				if ($mode -ceq '') { $mode = 'Clear' }
+				[void]$links.Add([ordered]@{ name = (Get-Text (Get-Kid $sub 'choiceParameter')); value = (Get-Text (Get-Kid $sub 'value')); mode = $mode })
+			}
+			$entry['choiceParameterLinks'] = $links.ToArray()
+		} else {
+			$text = Get-Text $valueEl
+			if ($kind -ceq 'boolean') {
+				$entry['value'] = ($text.Trim() -ceq 'true')
+			} elseif ($kind -ceq 'decimal') {
+				$entry['value'] = if ($text -match '\.') { [double]$text } else { [int]$text }
+			} else {
+				$entry['value'] = $text
+			}
+		}
+		[void]$items.Add($entry)
+	}
+	# Массив из одного элемента PowerShell разворачивает в скаляр - запятая это отменяет.
+	return ,$items.ToArray()
 }
 
 function Get-RestrictionTokens($el) {
@@ -255,8 +313,11 @@ function Build-Field($fieldEl) {
 	$xt = Get-XsiLocal $fieldEl
 	$node = [ordered]@{}
 	if ($xt -ceq 'DataSetFieldFolder') {
-		$node['dataPath'] = Get-Text (Get-Kid $fieldEl 'dataPath')
-		Add-Todo $node 'папка полей (DataSetFieldFolder) не поддержана нашим DSL'
+		# Поле-папка группирует поля по общему пути и своего значения не имеет.
+		$node['field'] = Get-Text (Get-Kid $fieldEl 'dataPath')
+		$node['folder'] = $true
+		$tFolder = Get-Kid $fieldEl 'title'
+		if ($null -ne $tFolder) { $node['title'] = Get-MlText $tFolder $node }
 		return $node
 	}
 	if ($xt -cne 'DataSetFieldField' -and $xt -cne '') {
@@ -280,16 +341,17 @@ function Build-Field($fieldEl) {
 			if ($rc.NodeType -ne 'Element') { continue }
 			$rl = $rc.LocalName
 			$rv = (Get-Text $rc).Trim()
-			if (($rl -ceq 'dimension' -or $rl -ceq 'account' -or $rl -ceq 'balance') -and $rv -ceq 'true') {
+			# Признак роли либо логический (@имя), либо со значением (имя=значение).
+			if ($rv -ceq 'true' -and $rl -cne 'periodNumber' -and $rl -cne 'periodType') {
 				[void]$roles.Add($rl)
 			} elseif ($rl -ceq 'periodNumber') {
 				$periodNum = $rv
 			} elseif ($rl -ceq 'periodType') {
 				$periodType = $rv
-			} elseif ($rl -ceq 'accountTypeExpression' -or $rl -ceq 'balanceGroup') {
-				$roleExtra[$rl] = $rv
+			} elseif ($rv -ceq 'false') {
+				continue
 			} else {
-				Add-Todo $node ('элемент роли не поддержан: ' + $rl)
+				$roleExtra[$rl] = $rv
 			}
 		}
 		if ($periodNum -ceq '1' -and $periodType -ceq 'Main') {
@@ -309,31 +371,58 @@ function Build-Field($fieldEl) {
 	if ($null -ne $appEl) { $appearance = Get-AppearanceMap $appEl $node }
 	$presExpr = Get-Text (Get-Kid $fieldEl 'presentationExpression')
 
-	$handled = @('dataPath', 'field', 'title', 'role', 'useRestriction',
-		'attributeUseRestriction', 'valueType', 'appearance', 'presentationExpression')
+	# Сортировка по выражению: у поля свой порядок, отличный от порядка по значению.
+	$orderExpr = $null
+	$oeEl = Get-Kid $fieldEl 'orderExpression'
+	if ($null -ne $oeEl) {
+		$orderExpr = [ordered]@{}
+		$orderExpr['expression'] = Get-Text (Get-Kid $oeEl 'expression')
+		$ot = Get-Text (Get-Kid $oeEl 'orderType')
+		$orderExpr['orderType'] = if ($ot -cne '') { $ot } else { 'Asc' }
+		$orderExpr['autoOrder'] = ((Get-Text (Get-Kid $oeEl 'autoOrder')).Trim() -ceq 'true')
+	}
+
+	$inputParameters = Get-InputParameters $fieldEl
+
+	$handled = @('dataPath', 'field', 'title', 'role', 'useRestriction', 'inputParameters',
+		'attributeUseRestriction', 'valueType', 'appearance', 'presentationExpression',
+		'orderExpression')
 	foreach ($c in $fieldEl.ChildNodes) {
 		if ($c.NodeType -eq 'Element' -and $handled -cnotcontains $c.LocalName) {
 			Add-Todo $node ('элемент поля не поддержан: ' + $c.LocalName)
 		}
 	}
 
+	# Значения признаков роли пишутся в шорткате наравне с самими признаками.
+	$extraSimple = $true
+	foreach ($entry in $roleExtra.GetEnumerator()) {
+		if (-not (Test-SimpleName ([string]$entry.Value))) { $extraSimple = $false }
+	}
 	$canShort = ((Test-SimpleName $dataPath) -and
 		($field -ceq '' -or $field -ceq $dataPath) -and
-		$title -ceq '' -and $roleExtra.Count -eq 0 -and $attrRestrict.Count -eq 0 -and
+		$title -ceq '' -and $extraSimple -and $attrRestrict.Count -eq 0 -and
 		($null -eq $appearance -or $appearance.Count -eq 0) -and $presExpr -ceq '' -and
 		(-not $node.Contains('_todo')) -and
-		($null -eq $typeStr -or (Test-SimpleName $typeStr)))
+		($null -eq $typeStr -or ($typeStr -is [string] -and (Test-SimpleName $typeStr))))
+	# Шорткат несет только имя, тип, признаки и ограничения: сортировка по выражению и
+	# параметры ввода в него не помещаются.
+	$canShort = $canShort -and ($null -eq $orderExpr) -and ($inputParameters.Count -eq 0)
 	if ($canShort) {
 		$s = $dataPath
 		if ($null -ne $typeStr) { $s += ': ' + $typeStr }
 		foreach ($r in $roles) { $s += ' @' + $r }
+		foreach ($entry in $roleExtra.GetEnumerator()) { $s += ' ' + $entry.Key + '=' + [string]$entry.Value }
 		foreach ($t in $restrict) { $s += ' #' + $t }
 		return $s
 	}
 
 	$obj = [ordered]@{}
-	$obj['dataPath'] = $dataPath
-	if ($field -cne '' -and $field -cne $dataPath) { $obj['field'] = $field }
+	# Имя поля пишется ключом field: так его читает и сборка.
+	$obj['field'] = $dataPath
+	if ($field -cne '' -and $field -cne $dataPath) {
+		$obj['dataPath'] = $dataPath
+		$obj['field'] = $field
+	}
 	if ($title -cne '') { $obj['title'] = $title }
 	if ($null -ne $typeStr) { $obj['type'] = $typeStr }
 	if ($roles.Count -gt 0 -or $roleExtra.Count -gt 0) {
@@ -350,6 +439,8 @@ function Build-Field($fieldEl) {
 	if ($attrRestrict.Count -gt 0) { $obj['attrRestrict'] = $attrRestrict }
 	if ($null -ne $appearance -and $appearance.Count -gt 0) { $obj['appearance'] = $appearance }
 	if ($presExpr -cne '') { $obj['presentationExpression'] = $presExpr }
+	if ($null -ne $orderExpr) { $obj['orderExpression'] = $orderExpr }
+	if ($inputParameters.Count -gt 0) { $obj['inputParameters'] = $inputParameters }
 	if ($node.Contains('_todo')) { $obj['_todo'] = $node['_todo'] }
 	return $obj
 }
@@ -363,7 +454,14 @@ function Build-DataSet($el, $defaultSource) {
 	$src = Get-Text (Get-Kid $el 'dataSource')
 	if ($xt -ceq 'DataSetQuery') {
 		if ($src -cne '' -and $src -cne $defaultSource) { $node['source'] = $src }
-		$node['query'] = Get-Text (Get-Kid $el 'query')
+		$queryText = Get-Text (Get-Kid $el 'query')
+		if ($queryText -match "`r?`n") {
+			$safeName = Get-SafeQueryFileName ([string]$node['name'])
+			$script:externalQueries[$safeName] = $queryText
+			$node['query'] = '@' + $script:queryFilePrefix + '-' + $safeName + '.sql'
+		} else {
+			$node['query'] = $queryText
+		}
 		$aff = Get-Kid $el 'autoFillFields'
 		if ($null -ne $aff -and (Get-Text $aff).Trim() -ceq 'false') {
 			$node['autoFillFields'] = $false
@@ -446,7 +544,7 @@ function Build-CalcField($el) {
 		$expr -cne '' -and (-not $expr.Contains("`n")) -and
 		(-not [regex]::IsMatch($expr, '#(noField|noFilter|noCondition|noGroup|noOrder)\b')) -and
 		($title -ceq '' -or -not [regex]::IsMatch($title, '[\]=#@]')) -and
-		($null -eq $typeStr -or (Test-SimpleName $typeStr)))
+		($null -eq $typeStr -or ($typeStr -is [string] -and (Test-SimpleName $typeStr))))
 	if ($canShort) {
 		$s = $dp
 		if ($title -cne '') { $s += ' [' + $title + ']' }
@@ -526,6 +624,8 @@ function Build-Parameter($el) {
 			if (($sd -cne '' -and $sd -cne $script:ZeroDate) -or ($ed -cne '' -and $ed -cne $script:ZeroDate)) {
 				Add-Todo $node ('нестандартные даты StandardPeriod потеряны: ' + $sd + ' / ' + $ed)
 			}
+		} elseif (-not $vEl.HasChildNodes -or (Get-Text $vEl).Trim() -ceq '') {
+			# Пустой типизированный элемент - это отсутствие значения, а не пустая строка.
 		} elseif ($vxt -ceq 'boolean') {
 			$node['value'] = (Get-Text $vEl).Trim()
 		} else {
@@ -623,7 +723,7 @@ function ConvertTo-ParamShorthand($p) {
 	$title = ''
 	if ($p.Contains('title')) { $title = [string]$p['title'] }
 	if (-not (Test-SimpleName $name)) { return $p }
-	if ($typeStr -ceq '' -or -not (Test-SimpleName $typeStr)) { return $p }
+	if ($typeStr -isnot [string] -or $typeStr -ceq '' -or -not (Test-SimpleName $typeStr)) { return $p }
 	if ($title -cne '' -and [regex]::IsMatch($title, '[\]@#=:]')) { return $p }
 	$vStr = $null
 	if ($p.Contains('value')) {
@@ -676,16 +776,7 @@ function Build-Selection($selEl, $todoNode) {
 			$tEl = Get-Kid $it 'lwsTitle'
 			$folder = [ordered]@{}
 			if ($null -ne $tEl) { $folder['folder'] = Get-MlText $tEl $todoNode } else { $folder['folder'] = '' }
-			$subItems = New-Object System.Collections.Generic.List[object]
-			foreach ($sub in (Get-Kids $it 'item')) {
-				$sxt = Get-XsiLocal $sub
-				if ($sxt -ceq 'SelectedItemField') {
-					[void]$subItems.Add((Get-Text (Get-Kid $sub 'field')))
-				} else {
-					Add-Todo $folder ('элемент папки выборки не поддержан: ' + $sxt)
-				}
-			}
-			$folder['items'] = $subItems
+			$folder['items'] = Build-Selection $it $folder
 			$placement = (Get-Text (Get-Kid $it 'placement')).Trim()
 			if ($placement -cne '' -and $placement -cne 'Auto') {
 				Add-Todo $folder ('размещение папки выборки не поддержано: ' + $placement)
@@ -904,7 +995,11 @@ function Build-ConditionalAppearance($caEl, $todoNode) {
 		$vm = (Get-Text (Get-Kid $it 'viewMode')).Trim()
 		if ($vm -cne '') { $node['viewMode'] = $vm }
 		$uid = (Get-Text (Get-Kid $it 'userSettingID')).Trim()
-		if ($uid -cne '') { $node['userSettingID'] = $uid }
+		if ($uid -cne '') {
+			# Идентификатор пользовательской настройки создается заново при сборке,
+			# поэтому в описании остается признак, а не сам идентификатор.
+			if ($uid -match $script:GuidPattern) { $node['userSettingID'] = 'auto' } else { $node['userSettingID'] = $uid }
+		}
 		if ((Get-Text (Get-Kid $it 'use')).Trim() -ceq 'false') {
 			Add-Todo $node 'условное оформление: use=false не поддержано нашим DSL'
 		}
@@ -936,6 +1031,29 @@ function Build-OutputParams($opEl, $todoNode) {
 		$result[$p] = $val
 	}
 	return $result
+}
+
+$script:GuidPattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+$script:SchemaParams = @()
+
+# Набор параметров данных совпадает с автоматическим, если он перечисляет все видимые
+# параметры схемы с их значениями и пользовательской настройкой.
+function Test-AutoDataParameters($items) {
+	$visible = New-Object System.Collections.Generic.List[object]
+	foreach ($p in $script:SchemaParams) {
+		if (-not $p['hidden']) { [void]$visible.Add($p) }
+	}
+	$shorthands = New-Object System.Collections.Generic.List[string]
+	foreach ($item in $items) { [void]$shorthands.Add(("$item")) }
+	if ($visible.Count -eq 0 -or $shorthands.Count -ne $visible.Count) { return $false }
+	for ($i = 0; $i -lt $visible.Count; $i++) {
+		$p = $visible[$i]
+		if (-not $p.Contains('value')) { return $false }
+		$value = "$($p['value'])"
+		if ($value -ceq '') { return $false }
+		if ($shorthands[$i] -cne ($p['name'] + ' = ' + $value + ' @user')) { return $false }
+	}
+	return $true
 }
 
 function Build-DataParameters($dpEl, $todoNode) {
@@ -1041,10 +1159,9 @@ function Build-GroupItems($giEl, $todoNode) {
 				Add-Todo $todoNode ('границы добавления периода у "' + $f + '" потеряны')
 			}
 		} elseif ($xt -ceq 'GroupItemAuto') {
-			$stub = [ordered]@{}
-			Add-Todo $stub 'группировка Авто (GroupItemAuto) не поддержана нашим DSL'
-			[void]$fields.Add($stub)
-		} else {
+		# Auto - автоматическая группировка, у нее нет ни поля, ни вида.
+		[void]$fields.Add('Auto')
+	} else {
 			$stub = [ordered]@{}
 			Add-Todo $stub ('элемент группировки не поддержан: ' + $xt)
 			[void]$fields.Add($stub)
@@ -1077,24 +1194,22 @@ function Set-StructureExtras($el, $node, $handled) {
 	}
 }
 
-function Set-StructureContent($el, $node, $withChildren) {
+function Set-StructureContent($el, $node, $withChildren, $axisForm = $false) {
 	$nEl = Get-Kid $el 'name'
 	if ($null -ne $nEl -and (Get-Text $nEl) -cne '') { $node['name'] = Get-Text $nEl }
 	$giEl = Get-Kid $el 'groupItems'
-	if ($null -ne $giEl) { $node['groupBy'] = Build-GroupItems $giEl $node }
-	$ordEl = Get-Kid $el 'order'
-	if ($null -ne $ordEl) {
-		$o = Build-Order $ordEl $node
-		if ($o.Count -gt 0 -and -not ($o.Count -eq 1 -and $o[0] -is [string] -and $o[0] -ceq 'Auto')) {
-			$node['order'] = $o
-		}
-	}
+	if ($null -ne $giEl) { $node['groupFields'] = Build-GroupItems $giEl $node }
+	# Отбор и порядок пишутся всегда, включая пустые: их отсутствие в файле и автоэлемент -
+	# разные вещи, и обратная сборка обязана их различать.
 	$selEl = Get-Kid $el 'selection'
-	if ($null -ne $selEl) {
-		$s = Build-Selection $selEl $node
-		if ($s.Count -gt 0 -and -not ($s.Count -eq 1 -and $s[0] -is [string] -and $s[0] -ceq 'Auto')) {
-			$node['selection'] = $s
-		}
+	$ordEl = Get-Kid $el 'order'
+	if ($axisForm) {
+		# У оси таблицы отсутствие отбора и порядка значимо: сборка не должна дописывать их.
+		if ($null -ne $ordEl) { $node['order'] = Build-Order $ordEl $node } else { $node['order'] = @() }
+		if ($null -ne $selEl) { $node['selection'] = Build-Selection $selEl $node } else { $node['selection'] = @() }
+	} else {
+		if ($null -ne $selEl) { $node['selection'] = Build-Selection $selEl $node }
+		if ($null -ne $ordEl) { $node['order'] = Build-Order $ordEl $node }
 	}
 	$fEl = Get-Kid $el 'filter'
 	if ($null -ne $fEl) {
@@ -1135,23 +1250,26 @@ function Build-StructureItem($el) {
 		$node['type'] = 'table'
 		$nEl = Get-Kid $el 'name'
 		if ($null -ne $nEl -and (Get-Text $nEl) -cne '') { $node['name'] = Get-Text $nEl }
+		# Порядок осей в описании тот же, что в файле: он значим для чтения.
 		$rows = New-Object System.Collections.Generic.List[object]
-		foreach ($r in (Get-Kids $el 'row')) {
-			$axis = [ordered]@{}
-			Set-StructureContent $r $axis $false
-			[void]$rows.Add($axis)
-		}
 		$cols = New-Object System.Collections.Generic.List[object]
-		foreach ($c in (Get-Kids $el 'column')) {
-			$axis = [ordered]@{}
-			Set-StructureContent $c $axis $false
-			if ($axis.Contains('name')) {
-				Add-Todo $axis 'имя колонки таблицы не поддержано компилятором'
+		foreach ($child in $el.ChildNodes) {
+			$tag = $child.LocalName
+			if ($tag -ceq 'column') {
+				$axis = [ordered]@{}
+				Set-StructureContent $child $axis $false $true
+				if ($axis.Contains('name')) {
+					Add-Todo $axis 'имя колонки таблицы не поддержано компилятором'
+				}
+				if ($cols.Count -eq 0 -and -not $node.Contains('columns')) { $node['columns'] = $cols }
+				[void]$cols.Add($axis)
+			} elseif ($tag -ceq 'row') {
+				$axis = [ordered]@{}
+				Set-StructureContent $child $axis $false $true
+				if ($rows.Count -eq 0 -and -not $node.Contains('rows')) { $node['rows'] = $rows }
+				[void]$rows.Add($axis)
 			}
-			[void]$cols.Add($axis)
 		}
-		if ($rows.Count -gt 0) { $node['rows'] = $rows }
-		if ($cols.Count -gt 0) { $node['columns'] = $cols }
 		$handled = New-Object System.Collections.Generic.List[object]
 		foreach ($h in @('name', 'row', 'column')) { [void]$handled.Add($h) }
 		foreach ($extra in @('selection', 'filter', 'conditionalAppearance', 'outputParameters')) {
@@ -1161,6 +1279,33 @@ function Build-StructureItem($el) {
 			}
 		}
 		Set-StructureExtras $el $node $handled
+		return $node
+	}
+	if ($xt -ceq 'StructureItemNestedObject') {
+		# Вложенный объект: своя выборка поверх набора данных, названного objectID.
+		$node = [ordered]@{}
+		$node['type'] = 'nestedObject'
+		$oidEl = Get-Kid $el 'objectID'
+		if ($null -ne $oidEl -and (Get-Text $oidEl) -cne '') { $node['objectID'] = Get-Text $oidEl }
+		$sEl = Get-Kid $el 'settings'
+		$nested = [ordered]@{}
+		if ($null -ne $sEl) {
+			$nSel = Get-Kid $sEl 'selection'
+			if ($null -ne $nSel) { $nested['selection'] = Build-Selection $nSel $node }
+			$nOrd = Get-Kid $sEl 'order'
+			if ($null -ne $nOrd) { $nested['order'] = Build-Order $nOrd $node }
+			$nFlt = Get-Kid $sEl 'filter'
+			if ($null -ne $nFlt) {
+				$flt = Build-Filter $nFlt $node
+				if ($flt.Count -gt 0) { $nested['filter'] = $flt }
+			}
+			$nOp = Get-Kid $sEl 'outputParameters'
+			if ($null -ne $nOp) {
+				$op = Build-OutputParams $nOp $node
+				if ($op.Count -gt 0) { $nested['outputParameters'] = $op }
+			}
+		}
+		$node['settings'] = $nested
 		return $node
 	}
 	if ($xt -ceq 'StructureItemChart') {
@@ -1208,11 +1353,23 @@ function Get-StructureShorthand($items) {
 	while ($true) {
 		if ($current.Count -ne 1 -or -not ($current[0] -is [System.Collections.IDictionary])) { return $null }
 		$node = $current[0]
-		foreach ($k in $node.Keys) {
-			if ($k -cne 'groupBy' -and $k -cne 'children') { return $null }
+		# Автоматические отбор и порядок сокращению не мешают: они и есть умолчание.
+		# Значения берутся тем же обходом, что и имена: индексатор упорядоченного словаря
+		# на строковом ключе выбирает целочисленную перегрузку и падает.
+		$autoOnly = $true
+		foreach ($entry in $node.GetEnumerator()) {
+			$key = [string]$entry.Key
+			if ($key -cne 'groupFields' -and $key -cne 'children' -and
+				$key -cne 'selection' -and $key -cne 'order') { return $null }
+			if ($key -ceq 'selection' -or $key -ceq 'order') {
+				$listValue = $entry.Value
+				if ($null -eq $listValue -or $listValue.Count -ne 1 -or
+					-not ($listValue[0] -is [string]) -or $listValue[0] -cne 'Auto') { $autoOnly = $false }
+			}
 		}
+		if (-not $autoOnly) { return $null }
 		$gb = $null
-		if ($node.Contains('groupBy')) { $gb = $node['groupBy'] }
+		if ($node.Contains('groupFields')) { $gb = $node['groupFields'] }
 		$children = $null
 		if ($node.Contains('children')) { $children = $node['children'] }
 		if ($null -eq $gb -or $gb.Count -eq 0) {
@@ -1261,7 +1418,9 @@ function Build-Settings($settingsEl) {
 	$dpEl = Get-Kid $settingsEl 'dataParameters'
 	if ($null -ne $dpEl) {
 		$dp = Build-DataParameters $dpEl $s
-		if ($dp.Count -gt 0) { $s['dataParameters'] = $dp }
+		if ($dp.Count -gt 0) {
+			if (Test-AutoDataParameters $dp) { $s['dataParameters'] = 'auto' } else { $s['dataParameters'] = $dp }
+		}
 	}
 	$structItems = New-Object System.Collections.Generic.List[object]
 	foreach ($c in (Get-Kids $settingsEl 'item')) { [void]$structItems.Add((Build-StructureItem $c)) }
@@ -1285,7 +1444,7 @@ function Build-Variant($vEl) {
 	$pEl = Get-Kid $vEl 'presentation'
 	$pres = ''
 	if ($null -ne $pEl) { $pres = Get-MlText $pEl $node }
-	if ($pres -cne '' -and $pres -cne $node['name']) { $node['presentation'] = $pres }
+	if ($pres -cne '' -and $pres -cne $node['name']) { $node['title'] = $pres }
 	$sEl = Get-Kid $vEl 'settings'
 	if ($null -ne $sEl) { $node['settings'] = Build-Settings $sEl }
 	$handled = @('name', 'presentation', 'settings')
@@ -1298,7 +1457,7 @@ function Build-Variant($vEl) {
 }
 
 function Test-DefaultVariant($v) {
-	if ($v['name'] -cne $script:VariantMain -or $v.Contains('presentation') -or $v.Contains('_todo')) {
+	if ($v['name'] -cne $script:VariantMain -or $v.Contains('title') -or $v.Contains('_todo')) {
 		return $false
 	}
 	if (-not $v.Contains('settings')) { return $true }
@@ -1339,12 +1498,21 @@ function Build-TemplateCell($cellEl, $tplNode) {
 			elseif ($p -ceq 'МинимальнаяШирина') { $info.width = Get-ParsedNumber $vTxt }
 			elseif ($p -ceq 'МинимальнаяВысота') { $info.minHeight = Get-ParsedNumber $vTxt }
 			elseif ($p -ceq 'Расшифровка') { $info.dd = $vTxt }
-			elseif ($p -ceq 'ЦветФона') { $probe['bg'] = Resolve-ColorValue $vTxt $vEl }
+			elseif ($p -ceq 'ЦветФона') { $probe['bgColor'] = Resolve-ColorValue $vTxt $vEl }
+			elseif ($p -ceq 'ЦветТекста') { $probe['textColor'] = Resolve-ColorValue $vTxt $vEl }
+			elseif ($p -ceq 'ЦветГраницы') { $probe['borderColor'] = Resolve-ColorValue $vTxt $vEl }
+			elseif ($p -ceq 'СтильГраницы') { $probe['borders'] = $true }
 			elseif ($p -ceq 'ГоризонтальноеПоложение') { $probe['hAlign'] = $vTxt }
+			elseif ($p -ceq 'ВертикальноеПоложение') { $probe['vAlign'] = $vTxt }
 			elseif ($p -ceq 'Размещение') { $probe['wrap'] = ($vTxt -ceq 'Wrap') }
-			elseif ($p -ceq 'Шрифт') { $probe['font'] = $true }
+			elseif ($p -ceq 'Шрифт' -and $null -ne $vEl) {
+				$probe['font'] = $vEl.GetAttribute('faceName')
+				$probe['fontSize'] = Get-ParsedNumber $vEl.GetAttribute('height')
+				$probe['bold'] = ($vEl.GetAttribute('bold') -ceq 'true')
+				$probe['italic'] = ($vEl.GetAttribute('italic') -ceq 'true')
+			}
 		}
-		if ($probe.Count -gt 0) { $info.probe = $probe }
+		$info.probe = $probe
 	}
 	$content = $null
 	$itemEl = Get-Kid $cellEl 'item'
@@ -1378,15 +1546,105 @@ function Build-TemplateCell($cellEl, $tplNode) {
 	return $info
 }
 
+# Оформление ячейки читается целиком и сверяется с пресетами: встроенными и пользовательскими
+# из skd-styles.json. Так распознается и свой стиль, а не только четыре штатных.
+$script:areaStylePresets = [ordered]@{
+	data = @{
+		font = 'Arial'; fontSize = 10; bold = $false; italic = $false
+		hAlign = $null; vAlign = $null; wrap = $false
+		bgColor = 'style:ReportGroup1BackColor'; textColor = $null
+		borderColor = 'style:ReportLineColor'; borders = $true
+	}
+	header = @{
+		font = 'Arial'; fontSize = 10; bold = $false; italic = $false
+		hAlign = 'Center'; vAlign = $null; wrap = $true
+		bgColor = 'style:ReportHeaderBackColor'; textColor = $null
+		borderColor = 'style:ReportLineColor'; borders = $true
+	}
+	subheader = @{
+		font = 'Arial'; fontSize = 10; bold = $false; italic = $false
+		hAlign = 'Center'; vAlign = $null; wrap = $true
+		bgColor = $null; textColor = $null
+		borderColor = 'style:ReportLineColor'; borders = $true
+	}
+	total = @{
+		font = 'Arial'; fontSize = 10; bold = $false; italic = $false
+		hAlign = $null; vAlign = $null; wrap = $false
+		bgColor = $null; textColor = $null
+		borderColor = 'style:ReportLineColor'; borders = $true
+	}
+	none = @{
+		font = $null; fontSize = $null; bold = $false; italic = $false
+		hAlign = $null; vAlign = $null; wrap = $false
+		bgColor = $null; textColor = $null
+		borderColor = $null; borders = $false
+	}
+}
+
+$script:styleKeys = @('font', 'fontSize', 'bold', 'italic', 'hAlign', 'vAlign', 'wrap',
+	'bgColor', 'textColor', 'borderColor', 'borders')
+
+$script:userStylePresets = [ordered]@{}
+
+# Пользовательские пресеты берутся оттуда же, откуда их берет сборка: каталог макета,
+# текущий каталог, затем подъем по дереву к presets/skills/skd.
+function Import-UserStylePresets($baseDir) {
+	$candidates = New-Object System.Collections.Generic.List[string]
+	[void]$candidates.Add((Join-Path $baseDir 'skd-styles.json'))
+	[void]$candidates.Add((Join-Path (Get-Location) 'skd-styles.json'))
+	$scanDir = $baseDir
+	while ($scanDir) {
+		[void]$candidates.Add((Join-Path $scanDir 'presets/skills/skd/skd-styles.json'))
+		$parentDir = Split-Path -Parent $scanDir
+		if ($parentDir -ceq $scanDir) { break }
+		$scanDir = $parentDir
+	}
+	foreach ($candidate in $candidates) {
+		if (-not (Test-Path $candidate)) { continue }
+		try {
+			$data = Get-Content -Raw -Encoding UTF8 $candidate | ConvertFrom-Json
+		} catch {
+			return
+		}
+		foreach ($prop in $data.PSObject.Properties) {
+			$base = @{}
+			$src = if ($script:areaStylePresets.Contains($prop.Name)) { $script:areaStylePresets[$prop.Name] } else { $script:areaStylePresets['data'] }
+			foreach ($k in $src.Keys) { $base[$k] = $src[$k] }
+			foreach ($op in $prop.Value.PSObject.Properties) { $base[$op.Name] = $op.Value }
+			$script:userStylePresets[$prop.Name] = $base
+		}
+		return
+	}
+}
+
+function Get-StyleSignature($props) {
+	$parts = New-Object System.Collections.Generic.List[string]
+	foreach ($k in $script:styleKeys) {
+		$v = $null
+		if ($props -is [System.Collections.IDictionary]) {
+			if ($props.Contains($k)) { $v = $props[$k] }
+		} elseif ($props.PSObject.Properties[$k]) {
+			$v = $props.$k
+		}
+		if ($k -in @('bold', 'italic', 'wrap', 'borders')) {
+			[void]$parts.Add($(if ($v -eq $true) { 'true' } else { 'false' }))
+		} elseif ($k -ceq 'fontSize') {
+			[void]$parts.Add($(if ($null -eq $v -or "$v" -eq '') { '' } else { "$([double]$v)" }))
+		} else {
+			[void]$parts.Add($(if ($v) { "$v" } else { '' }))
+		}
+	}
+	return ($parts -join '|')
+}
+
 function Get-TemplateStyle($probe) {
-	$bg = $null
-	if ($probe.ContainsKey('bg')) { $bg = $probe['bg'] }
-	$center = ($probe.ContainsKey('hAlign') -and $probe['hAlign'] -ceq 'Center')
-	$wrap = ($probe.ContainsKey('wrap') -and $probe['wrap'] -eq $true)
-	if ($bg -ceq 'style:ReportHeaderBackColor' -and $center -and $wrap) { return 'header' }
-	if ($bg -ceq 'style:ReportGroup1BackColor' -and -not $center -and -not $wrap) { return 'data' }
-	if ($null -eq $bg -and $center -and $wrap) { return 'subheader' }
-	if ($null -eq $bg -and -not $center -and -not $wrap) { return 'total' }
+	$want = Get-StyleSignature $probe
+	foreach ($name in $script:areaStylePresets.Keys) {
+		if ((Get-StyleSignature $script:areaStylePresets[$name]) -ceq $want) { return $name }
+	}
+	foreach ($name in $script:userStylePresets.Keys) {
+		if ((Get-StyleSignature $script:userStylePresets[$name]) -ceq $want) { return $name }
+	}
 	return $null
 }
 
@@ -1401,6 +1659,7 @@ function Build-Template($el) {
 	$widths = New-Object System.Collections.Generic.List[object]
 	$minHeight = 0
 	$firstProbe = $null
+	$cellProbes = New-Object System.Collections.Generic.List[object]
 	$cellDd = [ordered]@{}
 	if ($null -ne $inner) {
 		foreach ($rowEl in (Get-Kids $inner 'item')) {
@@ -1410,10 +1669,12 @@ function Build-Template($el) {
 				continue
 			}
 			$row = New-Object System.Collections.Generic.List[object]
+			$rowProbes = New-Object System.Collections.Generic.List[object]
 			$cI = 0
 			foreach ($cellEl in (Get-Kids $rowEl 'tableCell')) {
 				$info = Build-TemplateCell $cellEl $node
 				[void]$row.Add($info.content)
+				[void]$rowProbes.Add($info.probe)
 				if ($rows.Count -eq 0) {
 					[void]$widths.Add($info.width)
 					if ($cI -eq 0) { $minHeight = $info.minHeight }
@@ -1427,6 +1688,7 @@ function Build-Template($el) {
 				$cI += 1
 			}
 			[void]$rows.Add($row)
+			[void]$cellProbes.Add($rowProbes)
 		}
 	} else {
 		Add-Todo $node 'макет без области AreaTemplate - строки не декомпилированы'
@@ -1438,10 +1700,23 @@ function Build-Template($el) {
 			Add-Todo $node 'оформление ячеек не распознано - подбери style вручную (header/data/subheader/total или skd-styles.json)'
 		}
 	}
-	if ($null -ne $style -and $style -cne 'data') { $node['style'] = $style }
+	# Ячейка со своим оформлением записывается объектом: макетный стиль ей не подходит.
+	if ($null -ne $style) {
+		for ($rI = 0; $rI -lt $cellProbes.Count; $rI++) {
+			for ($cI2 = 0; $cI2 -lt $cellProbes[$rI].Count; $cI2++) {
+				$probe = $cellProbes[$rI][$cI2]
+				if ($null -eq $probe -or $cI2 -ge $rows[$rI].Count) { continue }
+				$cellStyle = Get-TemplateStyle $probe
+				if ($null -eq $cellStyle -or $cellStyle -ceq $style) { continue }
+				$rows[$rI][$cI2] = [ordered]@{ value = $rows[$rI][$cI2]; style = $cellStyle }
+			}
+		}
+		$node['style'] = $style
+	}
 	$hasWidth = $false
 	foreach ($w in $widths) { if ($w -ne 0) { $hasWidth = $true } }
-	if ($hasWidth) { $node['widths'] = $widths }
+	# Ширина колонки записывается строкой: так ее задает и читает наш DSL.
+	if ($hasWidth) { $node['widths'] = @($widths | ForEach-Object { "$_" }) }
 	if ($minHeight -ne 0) { $node['minHeight'] = $minHeight }
 	$node['rows'] = $rows
 
@@ -1531,6 +1806,27 @@ function Build-GroupTemplateNode($el, $ttypeOverride) {
 
 # === JSON writer (PS 5.1 ConvertTo-Json mangles unicode and layout) ===
 
+# Имя набора приходит из чужого файла и идет в имя файла запроса: разделители пути и
+# недопустимые символы в нем сделали бы запись мимо каталога назначения.
+function Get-SafeQueryFileName {
+	param([string]$Name)
+	$safe = [regex]::Replace($Name, '[^\p{L}\p{Nd}_-]', '_')
+	$safe = $safe.Trim('.', '_')
+	if (-not $safe) { $safe = 'query' }
+	if ($safe.Length -gt 64) { $safe = $safe.Substring(0, 64) }
+	$candidate = $safe
+	$suffix = 2
+	while ($script:externalQueries.Contains($candidate)) {
+		$candidate = $safe + '_' + $suffix
+		$suffix++
+	}
+	return $candidate
+}
+
+# --- Черновой JSON (общий блок, версия 2) ---
+# Ширина строки, после которой контейнер разворачивается по элементу на строку.
+$script:draftJsonWidth = 400
+
 function ConvertTo-JsonStringLiteral($s) {
 	$sb = New-Object System.Text.StringBuilder
 	[void]$sb.Append('"')
@@ -1547,7 +1843,7 @@ function ConvertTo-JsonStringLiteral($s) {
 	return $sb.ToString()
 }
 
-function ConvertTo-DraftJson($v, $indent) {
+function ConvertTo-InlineJson($v) {
 	if ($null -eq $v) { return 'null' }
 	if ($v -is [bool]) { if ($v) { return 'true' } else { return 'false' } }
 	if ($v -is [int] -or $v -is [int64] -or $v -is [double] -or $v -is [decimal]) {
@@ -1556,24 +1852,45 @@ function ConvertTo-DraftJson($v, $indent) {
 	if ($v -is [string]) { return ConvertTo-JsonStringLiteral $v }
 	if ($v -is [System.Collections.IDictionary]) {
 		if ($v.Count -eq 0) { return '{}' }
-		$inner = $indent + '  '
+		$parts = New-Object System.Collections.Generic.List[object]
+		foreach ($k in $v.Keys) {
+			[void]$parts.Add((ConvertTo-JsonStringLiteral ([string]$k)) + ': ' + (ConvertTo-InlineJson $v[$k]))
+		}
+		return '{ ' + ($parts -join ', ') + ' }'
+	}
+	if ($v -is [System.Collections.IEnumerable]) {
+		$parts = New-Object System.Collections.Generic.List[object]
+		foreach ($it in $v) { [void]$parts.Add((ConvertTo-InlineJson $it)) }
+		if ($parts.Count -eq 0) { return '[]' }
+		return '[' + ($parts -join ', ') + ']'
+	}
+	return ConvertTo-JsonStringLiteral ([string]$v)
+}
+
+# Описание пишется в том виде, в каком его удобно править руками: контейнер идет одной
+# строкой, пока в нее помещается, и разворачивается, когда перестает.
+function ConvertTo-DraftJson($v, $indent) {
+	$rendered = ConvertTo-InlineJson $v
+	$isContainer = ($v -is [System.Collections.IDictionary]) -or
+		(($v -is [System.Collections.IEnumerable]) -and ($v -isnot [string]))
+	if (-not $isContainer -or ($indent.Length + $rendered.Length) -le $script:draftJsonWidth) {
+		return $rendered
+	}
+	$inner = $indent + '  '
+	if ($v -is [System.Collections.IDictionary]) {
+		if ($v.Count -eq 0) { return '{}' }
 		$parts = New-Object System.Collections.Generic.List[object]
 		foreach ($k in $v.Keys) {
 			[void]$parts.Add($inner + (ConvertTo-JsonStringLiteral ([string]$k)) + ': ' + (ConvertTo-DraftJson $v[$k] $inner))
 		}
 		return "{`n" + ($parts -join ",`n") + "`n" + $indent + '}'
 	}
-	if ($v -is [System.Collections.IEnumerable]) {
-		$inner = $indent + '  '
-		$parts = New-Object System.Collections.Generic.List[object]
-		foreach ($it in $v) {
-			[void]$parts.Add($inner + (ConvertTo-DraftJson $it $inner))
-		}
-		if ($parts.Count -eq 0) { return '[]' }
-		return "[`n" + ($parts -join ",`n") + "`n" + $indent + ']'
-	}
-	return ConvertTo-JsonStringLiteral ([string]$v)
+	$parts = New-Object System.Collections.Generic.List[object]
+	foreach ($it in $v) { [void]$parts.Add($inner + (ConvertTo-DraftJson $it $inner)) }
+	if ($parts.Count -eq 0) { return '[]' }
+	return "[`n" + ($parts -join ",`n") + "`n" + $indent + ']'
 }
+# --- Конец общего блока чернового JSON ---
 
 # === Main ===
 
@@ -1586,6 +1903,7 @@ if (-not (Test-Path -LiteralPath $TemplatePath)) {
 	exit 1
 }
 $inPath = (Resolve-Path -LiteralPath $TemplatePath).Path
+Import-UserStylePresets (Split-Path -Parent $inPath)
 
 $xmlDoc = New-Object System.Xml.XmlDocument
 $xmlDoc.PreserveWhitespace = $false
@@ -1604,6 +1922,7 @@ if ($null -eq $root -or $root.LocalName -cne 'DataCompositionSchema') {
 	exit 1
 }
 
+$script:externalQueries = [ordered]@{}
 $outPath = $OutputPath
 if ([string]::IsNullOrEmpty($outPath)) {
 	$dir = [System.IO.Path]::GetDirectoryName($inPath)
@@ -1613,6 +1932,8 @@ if ([string]::IsNullOrEmpty($outPath)) {
 if (-not [System.IO.Path]::IsPathRooted($outPath)) {
 	$outPath = [System.IO.Path]::Combine((Get-Location).Path, $outPath)
 }
+# Имя внешнего файла запроса берется от имени описания: рядом с ним он и лежит.
+$script:queryFilePrefix = [System.IO.Path]::GetFileNameWithoutExtension($outPath)
 
 $rootTodos = New-Object System.Collections.Generic.List[object]
 function Add-RootTodo($msg) {
@@ -1661,6 +1982,7 @@ if ($totals.Count -gt 0) { $result['totalFields'] = $totals }
 $rawParams = New-Object System.Collections.Generic.List[object]
 foreach ($p in (Get-Kids $root 'parameter')) { [void]$rawParams.Add((Build-Parameter $p)) }
 $rawParams = Invoke-AutoDatesCollapse $rawParams
+$script:SchemaParams = $rawParams
 $params = New-Object System.Collections.Generic.List[object]
 foreach ($p in $rawParams) { [void]$params.Add((ConvertTo-ParamShorthand $p)) }
 if ($params.Count -gt 0) { $result['parameters'] = $params }
@@ -1717,8 +2039,14 @@ $outDir = [System.IO.Path]::GetDirectoryName($outPath)
 if ($outDir -and -not (Test-Path -LiteralPath $outDir)) {
 	[void][System.IO.Directory]::CreateDirectory($outDir)
 }
-$json = (ConvertTo-DraftJson $result '') + "`n"
+# Хвостового перевода строки в описании нет.
+$json = ConvertTo-DraftJson $result ''
 [System.IO.File]::WriteAllText($outPath, $json, (New-Object System.Text.UTF8Encoding($false)))
+
+foreach ($queryName in $script:externalQueries.Keys) {
+	$queryPath = [System.IO.Path]::Combine($outDir, $script:queryFilePrefix + '-' + $queryName + '.sql')
+	[System.IO.File]::WriteAllText($queryPath, $script:externalQueries[$queryName], (New-Object System.Text.UTF8Encoding($false)))
+}
 
 foreach ($w in $script:Warnings) {
 	[Console]::Error.WriteLine('TODO: ' + $w)

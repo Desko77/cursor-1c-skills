@@ -1,12 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"
-		xmlns:dcscom="http://v8.1c.ru/8.1/data-composition-system/common"
-		xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core"
-		xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings"
-		xmlns:v8="http://v8.1c.ru/8.1/data/core"
-		xmlns:v8ui="http://v8.1c.ru/8.1/data/ui"
-		xmlns:xs="http://www.w3.org/2001/XMLSchema"
-		xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcscom="http://v8.1c.ru/8.1/data-composition-system/common" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 	<dataSource>
 		<name>ИсточникДанных1</name>
 		<dataSourceType>Local</dataSourceType>
@@ -40,7 +33,9 @@
 				</v8:item>
 			</title>
 			<valueType>
-				<v8:Type xmlns:d5p1="http://v8.1c.ru/8.1/data/enterprise/current-config">d5p1:CatalogRef.СтруктураПредприятия CatalogRef.ЭтапыПроизводства CatalogRef.ВидыРабочихЦентров</v8:Type>
+				<v8:Type xmlns:d5p1="http://v8.1c.ru/8.1/data/enterprise/current-config">d5p1:CatalogRef.СтруктураПредприятия</v8:Type>
+				<v8:Type xmlns:d5p1="http://v8.1c.ru/8.1/data/enterprise/current-config">d5p1:CatalogRef.ЭтапыПроизводства</v8:Type>
+				<v8:Type xmlns:d5p1="http://v8.1c.ru/8.1/data/enterprise/current-config">d5p1:CatalogRef.ВидыРабочихЦентров</v8:Type>
 			</valueType>
 		</field>
 		<dataSource>ИсточникДанных1</dataSource>
@@ -56,6 +51,7 @@
 		</dcsset:presentation>
 		<dcsset:settings xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows">
 			<dcsset:selection>
+				<dcsset:item xsi:type="dcsset:SelectedItemAuto"/>
 			</dcsset:selection>
 			<dcsset:item xsi:type="dcsset:StructureItemGroup">
 				<dcsset:order>

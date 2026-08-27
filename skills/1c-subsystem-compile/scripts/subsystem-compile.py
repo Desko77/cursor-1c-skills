@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import uuid
 import xml.etree.ElementTree as ET
@@ -295,11 +296,13 @@ def new_uuid():
     return str(uuid.uuid4())
 
 
-def write_utf8_bom(path, content):
+def write_utf8_bom(path, content, eol='\r\n'):
     # Исходники 1С хранятся в CRLF: этого ждет Конфигуратор, и это закреплено в .gitattributes.
     # Сборка идет через '\n'.join, поэтому концы строк разворачиваются здесь, на записи.
     # Нормализация идемпотентна - смешанный текст тоже приходит к одному виду.
-    content = content.replace('\r\n', '\n').replace('\n', '\r\n')
+    # Правка существующего файла передает сюда его собственный eol: форсировать CRLF там
+    # нельзя, иначе навык переписывает весь чужой файл ради одной добавленной строки.
+    content = content.replace('\r\n', '\n').replace('\n', eol)
     with open(path, 'w', encoding='utf-8-sig', newline='') as f:
         f.write(content)
 
@@ -309,7 +312,9 @@ def split_camel_case(name):
         return name
     result = re.sub(r'([a-z\u0430-\u044f\u0451])([A-Z\u0410-\u042f\u0401])', r'\1 \2', name)
     if len(result) > 1:
-        result = result[0] + result[1:].lower()
+        tail = re.sub(r'(?<![А-ЯЁA-Z])([А-ЯЁA-Z])(?![А-ЯЁA-Z])',
+                      lambda m: m.group(1).lower(), result[1:])
+        result = result[0] + tail
     return result
 
 
@@ -353,6 +358,22 @@ def write_child_subsystem_stub(child_path, child_name, format_version):
     lines.append('\t</Subsystem>')
     lines.append('</MetaDataObject>')
     write_utf8_bom(child_path, '\n'.join(lines))
+
+
+def format_version_rank(version):
+    """Версии сравниваются по составным частям: 2.9 старее, чем 2.21, хотя как число больше."""
+    m = re.match(r"^(\d+)\.(\d+)$", str(version or ""))
+    return int(m.group(1)) * 100 + int(m.group(2)) if m else 0
+
+
+def sibling_skill_script(name, script_name):
+    """Скрипт соседнего навыка. Каталог навыка назван с префиксом 1c-, без него пути нет."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    for folder in ('1c-' + name, name):
+        candidate = os.path.normpath(os.path.join(base, '..', '..', folder, 'scripts', script_name))
+        if os.path.isfile(candidate):
+            return candidate
+    return ''
 
 
 def main():
@@ -521,7 +542,7 @@ def main():
     lines.append('<?xml version="1.0" encoding="UTF-8"?>')
     # Начиная с формата 2.21 (8.5) в шапке объявляется палитра - между lf и style.
     pal_ns = (' xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"'
-              if float(format_version) >= 2.21 else '')
+              if format_version_rank(format_version) >= 221 else '')
     lines.append(f'<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform"{pal_ns} xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="{format_version}">')
     lines.append(f'\t<Subsystem uuid="{uid}">')
     lines.append('\t\t<Properties>')
@@ -668,12 +689,21 @@ def main():
 
             if not already_exists:
                 # Use raw text manipulation to preserve formatting
-                if '<ChildObjects/>' in raw_text:
-                    replacement = f'<ChildObjects>\n\t\t\t<Subsystem>{esc_xml(obj_name)}</Subsystem>\n\t\t</ChildObjects>'
-                    raw_text = raw_text.replace('<ChildObjects/>', replacement, 1)
-                elif '</ChildObjects>' in raw_text:
-                    insert_line = f'\t\t\t<Subsystem>{esc_xml(obj_name)}</Subsystem>\n'
-                    raw_text = raw_text.replace('</ChildObjects>', insert_line + '\t\t</ChildObjects>', 1)
+                # Отступ берется у самого контейнера, а не задается числом табуляций:
+                # прежняя запись добавляла три табуляции К уже существующему отступу строки
+                # и давала пять.
+                self_closing = re.search(r'([ \t]*)<ChildObjects/>', raw_text)
+                closing = re.search(r'([ \t]*)</ChildObjects>', raw_text)
+                entry = f'<Subsystem>{esc_xml(obj_name)}</Subsystem>'
+                if self_closing:
+                    pad = self_closing.group(1)
+                    replacement = (f'<ChildObjects>\n{pad}\t{entry}\n{pad}</ChildObjects>')
+                    raw_text = (raw_text[:self_closing.start()] + pad + replacement
+                                + raw_text[self_closing.end():])
+                elif closing:
+                    pad = closing.group(1)
+                    raw_text = (raw_text[:closing.start()] + pad + '\t' + entry + '\n'
+                                + pad + '</ChildObjects>' + raw_text[closing.end():])
 
                 write_utf8_bom(parent_xml_path, raw_text)
                 print(f"[OK] Registered in: {parent_xml_path}")
@@ -686,12 +716,12 @@ def main():
 
     # --- 6. Auto-validate ---
     if not args.NoValidate:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        validate_script = os.path.normpath(os.path.join(script_dir, '..', '..', 'subsystem-validate', 'scripts', 'subsystem-validate.ps1'))
-        if os.path.exists(validate_script):
+        # Проверка идет тем же портом: состав и вложенность знает subsystem-validate,
+        # meta-validate смотрит только корень, UUID и имя.
+        validate_script = sibling_skill_script('subsystem-validate', 'subsystem-validate.py')
+        if validate_script:
             print()
-            print("--- Running subsystem-validate ---")
-            os.system(f'powershell.exe -NoProfile -File "{validate_script}" -SubsystemPath "{target_xml}"')
+            subprocess.run([sys.executable, validate_script, '-SubsystemPath', target_xml])
 
     # --- 7. Summary ---
     print()

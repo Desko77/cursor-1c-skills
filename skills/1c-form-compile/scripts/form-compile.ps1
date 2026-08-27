@@ -1644,6 +1644,45 @@ function X {
 	$script:xml.AppendLine($text) | Out-Null
 }
 
+# Объявления пространств имен зависят от версии формата: палитра цветов (pal)
+# добавлена в 2.21, до нее платформа этот префикс не пишет.
+# Версии формата сравниваются по составным частям, а не как десятичная дробь:
+# 2.9 старее, чем 2.21, хотя как число больше.
+function Get-FormatVersionRank {
+	param([string]$Version)
+	if ($Version -match '^(\d+)\.(\d+)$') { return [int]$Matches[1] * 100 + [int]$Matches[2] }
+	return 0
+}
+
+function Get-FormHeader {
+	param([string]$version)
+	$ns = @(
+		'xmlns="http://v8.1c.ru/8.3/xcf/logform"'
+		'xmlns:app="http://v8.1c.ru/8.2/managed-application/core"'
+		'xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config"'
+		'xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core"'
+		'xmlns:dcssch="http://v8.1c.ru/8.1/data-composition-system/schema"'
+		'xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings"'
+		'xmlns:ent="http://v8.1c.ru/8.1/data/enterprise"'
+		'xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform"'
+	)
+	if ((Get-FormatVersionRank $version) -ge 221) {
+		$ns += 'xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"'
+	}
+	$ns += @(
+		'xmlns:style="http://v8.1c.ru/8.1/data/ui/style"'
+		'xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system"'
+		'xmlns:v8="http://v8.1c.ru/8.1/data/core"'
+		'xmlns:v8ui="http://v8.1c.ru/8.1/data/ui"'
+		'xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web"'
+		'xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows"'
+		'xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"'
+		'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+		'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+	)
+	return "<Form " + ($ns -join " ") + " version=" + [char]34 + $version + [char]34 + ">"
+}
+
 function Esc-Xml {
 	param([string]$s)
 	return $s.Replace('&','&amp;').Replace('<','&lt;').Replace('>','&gt;').Replace('"','&quot;')
@@ -1724,6 +1763,11 @@ $script:knownInvalidTypes = @{
 function Resolve-TypeStr {
 	param([string]$typeStr)
 	if (-not $typeStr) { return $typeStr }
+	# Тип, скопированный из выгрузки, несет префикс пространства имен: cfg:, d5p1:, d4p1:.
+	# В описании он лишний - имя типа платформа читает без него.
+	# Срезается только префикс выгрузки конфигурации: схемные префиксы (v8:, xs:, v8ui:)
+	# часть имени типа, и без них тип не разрешается.
+	if ($typeStr -match '^(?:cfg|d\d+p\d+):(.+)$') { $typeStr = $Matches[1] }
 	if ($typeStr -match '^([^(]+)\((.+)\)$') {
 		$base = $Matches[1].Trim(); $params = $Matches[2]
 		$r = $script:formTypeSynonyms[$base.ToLower()]
@@ -2135,6 +2179,82 @@ function Emit-Group {
 	X "$indent</UsualGroup>"
 }
 
+# Имя параметра выбора платформа кладет в атрибут XML, поэтому кавычка, амперсанд
+# и угловая скобка в нем обязаны быть экранированы.
+function Get-ChoiceValueType {
+	param($value)
+	if ($value -is [bool]) { return "xs:boolean" }
+	if ($value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [decimal]) { return "xs:decimal" }
+	if ("$value" -match "^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$") { return "xs:dateTime" }
+	return "xs:string"
+}
+
+function Format-ChoiceValue {
+	param($value)
+	if ($value -is [bool]) { return $(if ($value) { "true" } else { "false" }) }
+	return Esc-Xml "$value"
+}
+
+function Emit-ChoiceParameters {
+	param($el, [string]$indent)
+
+	if (-not $el.choiceParameters) { return }
+	X "$indent<ChoiceParameters>"
+	foreach ($raw in @($el.choiceParameters)) {
+		# Краткая форма записи параметра - строка "Имя=Значение", значения в ней
+		# перечисляются через запятую.
+		$cpName = ""
+		$values = @()
+		$hasValue = $false
+		if ($raw -is [string]) {
+			$parts = "$raw" -split "=", 2
+			$cpName = $parts[0].Trim()
+			if ($parts.Count -gt 1) {
+				$hasValue = $true
+				# В краткой форме все значения текстовые, поэтому тип выводится из написания.
+				$values = @(($parts[1] -split ",") | ForEach-Object {
+					$v = $_.Trim()
+					if ($v -eq "true") { $true }
+					elseif ($v -eq "false") { $false }
+					elseif ($v -match "^-?\d+(\.\d+)?$") { [decimal]$v }
+					else { $v }
+				})
+			}
+		} else {
+			$cpName = "$($raw.name)"
+			$hasProp = $false
+			foreach ($prop in $raw.PSObject.Properties) { if ($prop.Name -eq "value") { $hasProp = $true } }
+			if ($hasProp) {
+				$hasValue = $true
+				$values = @($raw.value)
+			}
+		}
+
+		X "$indent`t<app:item name=`"$(Esc-Xml $cpName)`">"
+		X "$indent`t`t<app:value xsi:type=`"FormChoiceListDesTimeValue`">"
+		X "$indent`t`t`t<Presentation/>"
+		if (-not $hasValue) {
+			X "$indent`t`t`t<Value xsi:type=`"xs:string`"/>"
+		} elseif ($values.Count -gt 1) {
+			# Несколько значений платформа хранит списком значений.
+			X "$indent`t`t`t<Value xsi:type=`"v8:ValueListType`">"
+			foreach ($v in $values) {
+				X "$indent`t`t`t`t<v8:item>"
+				X "$indent`t`t`t`t`t<v8:presentation/>"
+				X "$indent`t`t`t`t`t<v8:value xsi:type=`"$(Get-ChoiceValueType $v)`">$(Format-ChoiceValue $v)</v8:value>"
+				X "$indent`t`t`t`t</v8:item>"
+			}
+			X "$indent`t`t`t</Value>"
+		} else {
+			$single = $values[0]
+			X "$indent`t`t`t<Value xsi:type=`"$(Get-ChoiceValueType $single)`">$(Format-ChoiceValue $single)</Value>"
+		}
+		X "$indent`t`t</app:value>"
+		X "$indent`t</app:item>"
+	}
+	X "$indent</ChoiceParameters>"
+}
+
 function Emit-Input {
 	param($el, [string]$name, [int]$id, [string]$indent)
 
@@ -2176,6 +2296,8 @@ function Emit-Input {
 	if ($el.inputHint) {
 		Emit-MLText -tag "InputHint" -text "$($el.inputHint)" -indent $inner
 	}
+
+	Emit-ChoiceParameters -el $el -indent $inner
 
 	# Companions
 	Emit-Companion -tag "ContextMenu" -name "${name}КонтекстноеМеню" -indent $inner
@@ -2579,6 +2701,18 @@ function Emit-Popup {
 
 # --- 8. Attribute emitter ---
 
+# Колонка реквизита формы: имя, идентификатор, заголовок и тип.
+function Emit-AttrColumn {
+	param($col, [string]$indent)
+	$colId = New-Id
+	X "$indent<Column name=`"$($col.name)`" id=`"$colId`">"
+	if ($col.title) {
+		Emit-MLText -tag "Title" -text $col.title -indent "$indent`t"
+	}
+	Emit-Type -typeStr "$($col.type)" -indent "$indent`t"
+	X "$indent</Column>"
+}
+
 function Emit-Attributes {
 	param($attrs, [string]$indent)
 
@@ -2596,8 +2730,12 @@ function Emit-Attributes {
 		X "$indent`t<Attribute name=`"$attrName`" id=`"$attrId`">"
 		$inner = "$indent`t`t"
 
+		# Заголовок реквизита формы платформа проставляет сама: у обычного реквизита он равен
+		# имени, у основного отсутствует.
 		if ($attr.title) {
 			Emit-MLText -tag "Title" -text $attr.title -indent $inner
+		} elseif ($attr.main -ne $true) {
+			Emit-MLText -tag "Title" -text "$($attr.name)" -indent $inner
 		}
 
 		# Type
@@ -2610,6 +2748,8 @@ function Emit-Attributes {
 		if ($attr.main -eq $true) {
 			X "$inner<MainAttribute>true</MainAttribute>"
 		}
+		# Признак сохраняемых данных пишется только по явному ключу: платформа выставляет
+		# его у основного реквизита сама, и лишняя запись расходится с выгрузкой.
 		if ($attr.savedData -eq $true) {
 			X "$inner<SavedData>true</SavedData>"
 		}
@@ -2617,17 +2757,50 @@ function Emit-Attributes {
 			X "$inner<FillChecking>$($attr.fillChecking)</FillChecking>"
 		}
 
-		# Columns (for ValueTable/ValueTree)
-		if ($attr.columns -and $attr.columns.Count -gt 0) {
+		# UseAlways: поля, читаемые с сервера всегда. Имя без точки достраивается именем
+		# реквизита; знак ~ остается впереди. Колонки с признаком идут следом.
+		$useAlwaysFields = New-Object System.Collections.Generic.List[string]
+		foreach ($field in @($attr.useAlways | Where-Object { $null -ne $_ })) {
+			$fieldText = "$field"
+			$mark = ''
+			if ($fieldText.StartsWith('~')) {
+				$mark = '~'
+				$fieldText = $fieldText.Substring(1)
+			}
+			if ($fieldText -notmatch '\.') { $fieldText = $attrName + '.' + $fieldText }
+			[void]$useAlwaysFields.Add($mark + $fieldText)
+		}
+		foreach ($col in @($attr.columns | Where-Object { $null -ne $_ })) {
+			if ($col.useAlways -eq $true) { [void]$useAlwaysFields.Add($attrName + '.' + "$($col.name)") }
+		}
+		if ($useAlwaysFields.Count -gt 0) {
+			X "$inner<UseAlways>"
+			foreach ($field in $useAlwaysFields) {
+				X "$inner`t<Field>$field</Field>"
+			}
+			X "$inner</UseAlways>"
+		}
+
+		# Columns (for ValueTable/ValueTree) + AdditionalColumns табличных частей объекта.
+		# Порядок платформы: сначала прямые колонки, затем группы дополнительных.
+		$directCols = @($attr.columns | Where-Object { $null -ne $_ })
+		$addCols = @($attr.additionalColumns | Where-Object { $null -ne $_ })
+		if ($directCols.Count -gt 0 -or $addCols.Count -gt 0) {
 			X "$inner<Columns>"
-			foreach ($col in $attr.columns) {
-				$colId = New-Id
-				X "$inner`t<Column name=`"$($col.name)`" id=`"$colId`">"
-				if ($col.title) {
-					Emit-MLText -tag "Title" -text $col.title -indent "$inner`t`t"
+			foreach ($col in $directCols) {
+				Emit-AttrColumn -col $col -indent "$inner`t"
+			}
+			foreach ($ac in $addCols) {
+				$acCols = @($ac.columns | Where-Object { $null -ne $_ })
+				if ($acCols.Count -eq 0) {
+					X "$inner`t<AdditionalColumns table=`"$($ac.table)`"/>"
+					continue
 				}
-				Emit-Type -typeStr "$($col.type)" -indent "$inner`t`t"
-				X "$inner`t</Column>"
+				X "$inner`t<AdditionalColumns table=`"$($ac.table)`">"
+				foreach ($col in $acCols) {
+					Emit-AttrColumn -col $col -indent "$inner`t`t"
+				}
+				X "$inner`t</AdditionalColumns>"
 			}
 			X "$inner</Columns>"
 		}
@@ -2760,26 +2933,77 @@ function Emit-Properties {
 	}
 }
 
-# --- 12. Main compilation ---
+# --- 11a. Проверка описания формы ---
+# Ошибки ниже платформа обнаружит только при открытии формы, а часть - молча проглотит:
+# два элемента с одним именем дают форму, где второй недоступен из кода.
 
-# Title
-if ($def.title) {
-	Emit-MLText -tag "Title" -text $def.title -indent "`t"
+$script:elementNames = @{}
+$script:elementDup = ""
+
+function Test-ElementNames {
+	param($items)
+	foreach ($el in @($items)) {
+		if ($null -eq $el) { continue }
+		$typeKey = $null
+		foreach ($key in @("group","input","check","label","labelField","table","pages","page","button","picture","picField","calendar","cmdBar","popup")) {
+			if ($null -ne $el.$key) { $typeKey = $key; break }
+		}
+		if ($typeKey) {
+			$elName = Get-ElementName -el $el -typeKey $typeKey
+			if ($elName) {
+				if ($script:elementNames.ContainsKey($elName)) {
+					if (-not $script:elementDup) { $script:elementDup = $elName }
+				} else {
+					$script:elementNames[$elName] = $true
+				}
+			}
+		}
+		# Вложенные элементы лежат в children - так их читают и сборщики XML.
+		if ($el.children) { Test-ElementNames $el.children }
+	}
 }
 
-# Header
+if ($def.elements) {
+	Test-ElementNames $def.elements
+	if ($script:elementDup) {
+		Write-Error "Duplicate element name: $($script:elementDup)"
+		exit 1
+	}
+}
+
+if ($def.commands) {
+	$cmdNames = @{}
+	foreach ($cmd in @($def.commands)) {
+		$cmdName = "$($cmd.name)"
+		if (-not $cmdName) { continue }
+		if ($cmdNames.ContainsKey($cmdName)) {
+			Write-Error "Duplicate command name: $cmdName"
+			exit 1
+		}
+		$cmdNames[$cmdName] = $true
+	}
+}
+
+if ($def.attributes) {
+	foreach ($attr in @($def.attributes)) {
+		if (-not $attr.additionalColumns) { continue }
+		foreach ($ac in @($attr.additionalColumns)) {
+			$hasColumns = $false
+			foreach ($prop in $ac.PSObject.Properties) {
+				if ($prop.Name -eq "columns") { $hasColumns = $true; break }
+			}
+			if (-not $hasColumns) {
+				Write-Error "Additional columns for table '$($ac.table)': key 'columns' is missing"
+				exit 1
+			}
+		}
+	}
+}
+
+# --- 12. Main compilation ---
+
 X '<?xml version="1.0" encoding="UTF-8"?>'
-X "<Form xmlns=`"http://v8.1c.ru/8.3/xcf/logform`" xmlns:app=`"http://v8.1c.ru/8.2/managed-application/core`" xmlns:cfg=`"http://v8.1c.ru/8.1/data/enterprise/current-config`" xmlns:dcscor=`"http://v8.1c.ru/8.1/data-composition-system/core`" xmlns:dcssch=`"http://v8.1c.ru/8.1/data-composition-system/schema`" xmlns:dcsset=`"http://v8.1c.ru/8.1/data-composition-system/settings`" xmlns:ent=`"http://v8.1c.ru/8.1/data/enterprise`" xmlns:lf=`"http://v8.1c.ru/8.2/managed-application/logform`" xmlns:style=`"http://v8.1c.ru/8.1/data/ui/style`" xmlns:sys=`"http://v8.1c.ru/8.1/data/ui/fonts/system`" xmlns:v8=`"http://v8.1c.ru/8.1/data/core`" xmlns:v8ui=`"http://v8.1c.ru/8.1/data/ui`" xmlns:web=`"http://v8.1c.ru/8.1/data/ui/colors/web`" xmlns:win=`"http://v8.1c.ru/8.1/data/ui/colors/windows`" xmlns:xr=`"http://v8.1c.ru/8.3/xcf/readable`" xmlns:xs=`"http://www.w3.org/2001/XMLSchema`" xmlns:xsi=`"http://www.w3.org/2001/XMLSchema-instance`" version=`"$($script:formatVersion)`">"
-
-# Oops — Title was emitted before header. Need to fix the order.
-# Actually, let me restructure: build the body into a separate buffer, then assemble
-
-# Reset and rebuild properly
-$script:xml = New-Object System.Text.StringBuilder 8192
-$script:nextId = 1
-
-X '<?xml version="1.0" encoding="UTF-8"?>'
-X "<Form xmlns=`"http://v8.1c.ru/8.3/xcf/logform`" xmlns:app=`"http://v8.1c.ru/8.2/managed-application/core`" xmlns:cfg=`"http://v8.1c.ru/8.1/data/enterprise/current-config`" xmlns:dcscor=`"http://v8.1c.ru/8.1/data-composition-system/core`" xmlns:dcssch=`"http://v8.1c.ru/8.1/data-composition-system/schema`" xmlns:dcsset=`"http://v8.1c.ru/8.1/data-composition-system/settings`" xmlns:ent=`"http://v8.1c.ru/8.1/data/enterprise`" xmlns:lf=`"http://v8.1c.ru/8.2/managed-application/logform`" xmlns:style=`"http://v8.1c.ru/8.1/data/ui/style`" xmlns:sys=`"http://v8.1c.ru/8.1/data/ui/fonts/system`" xmlns:v8=`"http://v8.1c.ru/8.1/data/core`" xmlns:v8ui=`"http://v8.1c.ru/8.1/data/ui`" xmlns:web=`"http://v8.1c.ru/8.1/data/ui/colors/web`" xmlns:win=`"http://v8.1c.ru/8.1/data/ui/colors/windows`" xmlns:xr=`"http://v8.1c.ru/8.3/xcf/readable`" xmlns:xs=`"http://www.w3.org/2001/XMLSchema`" xmlns:xsi=`"http://www.w3.org/2001/XMLSchema-instance`" version=`"$($script:formatVersion)`">"
+X (Get-FormHeader $script:formatVersion)
 
 # 12a. Title (from def.title or properties.title — must be multilingual XML)
 $formTitle = $def.title

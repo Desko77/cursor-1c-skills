@@ -144,6 +144,18 @@ function Assert-EditAllowed([string]$targetPath, [string]$require) {
 }
 # --- Конец общего блока гарда поддержки ---
 
+# Скрипт соседнего навыка. Каталог навыка назван с префиксом 1c-, без него пути нет.
+function Get-SiblingSkillScript {
+	param([string]$name, [string]$scriptName)
+	foreach ($folder in @("1c-$name", $name)) {
+		$candidate = Join-Path (Join-Path $PSScriptRoot "..\..\$folder") "scripts\$scriptName"
+		$candidate = [System.IO.Path]::GetFullPath($candidate)
+		if (Test-Path $candidate) { return $candidate }
+	}
+	return ""
+}
+
+
 # --- Content type normalization (plural→singular, Russian→English) ---
 $script:contentTypeMap = @{
 	"Catalogs"="Catalog"; "Documents"="Document"; "Enums"="Enum"; "Constants"="Constant"
@@ -310,12 +322,20 @@ function New-Guid-String {
 	return [System.Guid]::NewGuid().ToString()
 }
 
+# Версии формата сравниваются по составным частям, а не как десятичная дробь:
+# 2.9 старее, чем 2.21, хотя как число больше.
+function Get-FormatVersionRank {
+	param([string]$Version)
+	if ($Version -match '^(\d+)\.(\d+)$') { return [int]$Matches[1] * 100 + [int]$Matches[2] }
+	return 0
+}
+
 function Write-ChildSubsystemStub([string]$childPath, [string]$childName, [string]$formatVersion, [System.Text.Encoding]$utf8Bom) {
 	$childUuid = New-Guid-String
 	$sb = New-Object System.Text.StringBuilder 2048
 	[void]$sb.AppendLine('<?xml version="1.0" encoding="UTF-8"?>')
 	# Начиная с формата 2.21 (8.5) в шапке объявляется палитра - между lf и style.
-	$palNs = if ([double]::Parse($formatVersion, [System.Globalization.CultureInfo]::InvariantCulture) -ge 2.21) { ' xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"' } else { '' }
+	$palNs = if ((Get-FormatVersionRank $formatVersion) -ge 221) { ' xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"' } else { '' }
 	[void]$sb.AppendLine("<MetaDataObject xmlns=`"http://v8.1c.ru/8.3/MDClasses`" xmlns:app=`"http://v8.1c.ru/8.2/managed-application/core`" xmlns:cfg=`"http://v8.1c.ru/8.1/data/enterprise/current-config`" xmlns:cmi=`"http://v8.1c.ru/8.2/managed-application/cmi`" xmlns:ent=`"http://v8.1c.ru/8.1/data/enterprise`" xmlns:lf=`"http://v8.1c.ru/8.2/managed-application/logform`"$palNs xmlns:style=`"http://v8.1c.ru/8.1/data/ui/style`" xmlns:sys=`"http://v8.1c.ru/8.1/data/ui/fonts/system`" xmlns:v8=`"http://v8.1c.ru/8.1/data/core`" xmlns:v8ui=`"http://v8.1c.ru/8.1/data/ui`" xmlns:web=`"http://v8.1c.ru/8.1/data/ui/colors/web`" xmlns:win=`"http://v8.1c.ru/8.1/data/ui/colors/windows`" xmlns:xen=`"http://v8.1c.ru/8.3/xcf/enums`" xmlns:xpr=`"http://v8.1c.ru/8.3/xcf/predef`" xmlns:xr=`"http://v8.1c.ru/8.3/xcf/readable`" xmlns:xs=`"http://www.w3.org/2001/XMLSchema`" xmlns:xsi=`"http://www.w3.org/2001/XMLSchema-instance`" version=`"$formatVersion`">")
 	[void]$sb.AppendLine("`t<Subsystem uuid=`"$childUuid`">")
 	[void]$sb.AppendLine("`t`t<Properties>")
@@ -661,15 +681,26 @@ $text = $text.Replace('encoding="utf-8"', 'encoding="UTF-8"')
 # поэтому они идут первыми ветками альтернации и возвращаются как есть.
 $text = [regex]::Replace($text, '(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|<([A-Za-z0-9_:.\-]+)((?:\s+[A-Za-z0-9_:.\-]+="[^"]*")*)\s+/>', { param($m) if ($m.Groups[1].Success) { '<' + $m.Groups[1].Value + $m.Groups[2].Value + '/>' } else { $m.Value } })
 
+# Концы строк берутся из ФАЙЛА, который правим: объекты конфигурации хранятся в CRLF,
+# схемы компоновки в LF. Форсировать один вид нельзя - навык испортит чужой формат.
+$origText = if (Test-Path $resolvedPath) { [System.IO.File]::ReadAllText($resolvedPath) } else { "" }
+$origCrlf = $origText.Contains("`r`n")
+$text = $text.Replace("`r`n", "`n")
+if ($origCrlf) { $text = $text.Replace("`n", "`r`n") }
+# Хвостовой перевод исходного файла тоже сохраняется: универсального правила нет,
+# часть навыков его пишет, часть нет - правка не должна это менять.
+if ($origText.EndsWith("`n") -and -not $text.EndsWith("`n")) {
+	$text += if ($origCrlf) { "`r`n" } else { "`n" }
+}
+
 $utf8Bom = New-Object System.Text.UTF8Encoding($true)
 [System.IO.File]::WriteAllText($resolvedPath, $text, $utf8Bom)
 Info "Saved: $resolvedPath"
 
 # --- Auto-validate ---
 if (-not $NoValidate) {
-	$validateScript = Join-Path (Join-Path $PSScriptRoot "..\..\subsystem-validate") "scripts\subsystem-validate.ps1"
-	$validateScript = [System.IO.Path]::GetFullPath($validateScript)
-	if (Test-Path $validateScript) {
+	$validateScript = Get-SiblingSkillScript "subsystem-validate" "subsystem-validate.ps1"
+	if ($validateScript) {
 		Write-Host ""
 		Write-Host "--- Running subsystem-validate ---"
 		& powershell.exe -NoProfile -File $validateScript -SubsystemPath $resolvedPath

@@ -275,7 +275,25 @@ def lenient(data):
 
 
 def esc_xml(s):
-    return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+    return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+
+def esc_attr(s):
+    """Значение атрибута: сверх содержимого экранируется кавычка."""
+    return esc_xml(s).replace('"', '&quot;')
+
+
+def design_time_value(value):
+    """Тип значения и его текст: платформа пишет тип явным атрибутом xsi:type."""
+    if isinstance(value, bool):
+        return 'xs:boolean', 'true' if value else 'false'
+    if isinstance(value, (int, float)):
+        return 'xs:decimal', esc_xml(str(value))
+    text = str(value)
+    if re.match(r'^(Перечисление|Справочник|ПланСчетов|Документ|ПланВидовХарактеристик|ПланВидовРасчета)\.', text):
+        return 'dcscor:DesignTimeValue', esc_xml(text)
+    return 'xs:string', esc_xml(text)
+
 
 def fmt_dec(v):
     """Format decimal: 30.0 → '30', 16.625 → '16.625' (match PS1 output)."""
@@ -324,11 +342,13 @@ def new_uuid():
     return str(uuid.uuid4())
 
 
-def write_utf8_bom(path, content):
+def write_utf8_bom(path, content, eol='\r\n'):
     # Исходники 1С хранятся в CRLF: этого ждет Конфигуратор, и это закреплено в .gitattributes.
     # Сборка идет через '\n'.join, поэтому концы строк разворачиваются здесь, на записи.
     # Нормализация идемпотентна - смешанный текст тоже приходит к одному виду.
-    content = content.replace('\r\n', '\n').replace('\n', '\r\n')
+    # Правка существующего файла передает сюда его собственный eol: форсировать CRLF там
+    # нельзя, иначе навык переписывает весь чужой файл ради одной добавленной строки.
+    content = content.replace('\r\n', '\n').replace('\n', eol)
     with open(path, 'w', encoding='utf-8-sig', newline='') as f:
         f.write(content)
 
@@ -362,6 +382,11 @@ TYPE_SYNONYMS = {
 def resolve_type_str(type_str):
     if not type_str:
         return type_str
+    # Срезается только префикс выгрузки конфигурации: схемные префиксы (v8:, xs:, v8ui:)
+    # часть имени типа, и без них тип не разрешается.
+    m_prefix = re.match(r'^(?:cfg|d\d+p\d+):(.+)$', type_str)
+    if m_prefix:
+        type_str = m_prefix.group(1)
 
     # Check for parameterized types: число(15,2), строка(100), etc.
     m = re.match(r'^([^(]+)\((.+)\)$', type_str)
@@ -394,6 +419,11 @@ def resolve_type_str(type_str):
 def emit_value_type(lines, type_str, indent):
     if not type_str:
         return
+    # Составной тип - список: у каждого типа свой элемент, склеивать их в один нельзя.
+    if isinstance(type_str, (list, tuple)):
+        for one in type_str:
+            emit_value_type(lines, one, indent)
+        return
     # В PowerShell параметр объявлен как [string], и массив склеивается уже на границе вызова.
     type_str = ps_str(type_str)
 
@@ -406,21 +436,22 @@ def emit_value_type(lines, type_str, indent):
         return
 
     # string or string(N)
-    m = re.match(r'^string(\((\d+)\))?$', type_str)
+    m = re.match(r'^string(\((\d+)(,fix)?\))?$', type_str)
     if m:
         length = m.group(2) if m.group(2) else '0'
+        allowed = 'Fixed' if m.group(3) else 'Variable'
         lines.append(f'{indent}<v8:Type>xs:string</v8:Type>')
         lines.append(f'{indent}<v8:StringQualifiers>')
         lines.append(f'{indent}\t<v8:Length>{length}</v8:Length>')
-        lines.append(f'{indent}\t<v8:AllowedLength>Variable</v8:AllowedLength>')
+        lines.append(f'{indent}\t<v8:AllowedLength>{allowed}</v8:AllowedLength>')
         lines.append(f'{indent}</v8:StringQualifiers>')
         return
 
     # decimal(D,F) or decimal(D,F,nonneg)
-    m = re.match(r'^decimal\((\d+),(\d+)(,nonneg)?\)$', type_str)
+    m = re.match(r'^decimal\((\d+)(?:,(\d+))?(,nonneg)?\)$', type_str)
     if m:
         digits = m.group(1)
-        fraction = m.group(2)
+        fraction = m.group(2) or '0'
         sign = 'Nonnegative' if m.group(3) else 'Any'
         lines.append(f'{indent}<v8:Type>xs:decimal</v8:Type>')
         lines.append(f'{indent}<v8:NumberQualifiers>')
@@ -466,6 +497,12 @@ def parse_field_shorthand(s):
         'dataPath': '', 'field': '', 'title': '', 'type': '',
         'roles': [], 'restrict': [], 'appearance': {},
     }
+
+    # Признак роли может нести значение: @balance balanceGroupName=Сумма.
+    kv_matches = re.findall(r'(\w+)=([^\s]+)', s)
+    for key, value in kv_matches:
+        result.setdefault('roleExtra', {})[key] = value
+    s = re.sub(r'\s*\w+=[^\s]+', '', s)
 
     # Extract @roles
     role_matches = re.findall(r'@(\w+)', s)
@@ -762,7 +799,8 @@ def emit_field(lines, field_def, indent):
             'dataPath': str(field_def.get('dataPath', '')) or str(field_def.get('field', '')),
             'field': str(field_def.get('field', '')) or str(field_def.get('dataPath', '')),
             'title': field_def['title'] if field_def.get('title') else '',
-            'type': resolve_type_str(ps_str(field_def['type'])) if field_def.get('type') else '',
+            'type': (list(field_def['type']) if isinstance(field_def.get('type'), list)
+                     else resolve_type_str(ps_str(field_def['type']))) if field_def.get('type') else '',
             'roles': [],
             'restrict': [],
             'appearance': {},
@@ -779,10 +817,14 @@ def emit_field(lines, field_def, indent):
         # Parse restrictions
         if field_def.get('restrict'):
             f['restrict'] = list(field_def['restrict'])
+        # Параметры ввода поля переносятся как есть: их состав задан платформой.
+        if field_def.get('inputParameters'):
+            f['inputParameters'] = list(field_def['inputParameters'])
         # Parse appearance
         if field_def.get('appearance'):
             for k, v in field_def['appearance'].items():
-                f['appearance'][k] = str(v)
+                # Значение сохраняется как есть: многоязычное приходит объектом.
+                f['appearance'][k] = v if isinstance(v, dict) else str(v)
         if field_def.get('presentationExpression'):
             f['presentationExpression'] = str(field_def['presentationExpression'])
         # attrRestrict
@@ -791,6 +833,15 @@ def emit_field(lines, field_def, indent):
         # role object extras
         if field_def.get('role') and not isinstance(field_def['role'], str):
             f['roleObj'] = field_def['role']
+
+    # Поле-папка группирует поля по общему пути и своего значения не имеет.
+    if isinstance(field_def, dict) and field_def.get('folder'):
+        lines.append(f'{indent}<field xsi:type="DataSetFieldFolder">')
+        lines.append(f'{indent}\t<dataPath>{esc_xml(f["dataPath"])}</dataPath>')
+        if f.get('title'):
+            emit_mltext(lines, f'{indent}\t', 'title', f['title'])
+        lines.append(f'{indent}</field>')
+        return
 
     lines.append(f'{indent}<field xsi:type="DataSetFieldField">')
     lines.append(f'{indent}\t<dataPath>{esc_xml(f["dataPath"])}</dataPath>')
@@ -823,7 +874,7 @@ def emit_field(lines, field_def, indent):
         lines.append(f'{indent}\t</attributeUseRestriction>')
 
     # Role
-    if (f.get('roles') and len(f['roles']) > 0) or f.get('roleObj'):
+    if (f.get('roles') and len(f['roles']) > 0) or f.get('roleObj') or f.get('roleExtra'):
         lines.append(f'{indent}\t<role>')
         for role in f.get('roles', []):
             if role == 'period':
@@ -831,13 +882,23 @@ def emit_field(lines, field_def, indent):
                 lines.append(f'{indent}\t\t<dcscom:periodType>Main</dcscom:periodType>')
             else:
                 lines.append(f'{indent}\t\t<dcscom:{role}>true</dcscom:{role}>')
-        if f.get('roleObj'):
-            ro = f['roleObj']
-            if ro.get('accountTypeExpression'):
-                lines.append(f'{indent}\t\t<dcscom:accountTypeExpression>{esc_xml(str(ro["accountTypeExpression"]))}</dcscom:accountTypeExpression>')
-            if ro.get('balanceGroup'):
-                lines.append(f'{indent}\t\t<dcscom:balanceGroup>{esc_xml(str(ro["balanceGroup"]))}</dcscom:balanceGroup>')
+        role_extra = dict(f.get('roleObj') or {})
+        role_extra.update(f.get('roleExtra') or {})
+        for extra_key, extra_value in role_extra.items():
+            if extra_value is True or extra_value is False or extra_value is None:
+                continue
+            lines.append(f'{indent}\t\t<dcscom:{extra_key}>{esc_xml(str(extra_value))}</dcscom:{extra_key}>')
         lines.append(f'{indent}\t</role>')
+
+    # Сортировка по выражению: у поля свой порядок, отличный от порядка по значению.
+    order_expr = field_def.get('orderExpression') if isinstance(field_def, dict) else None
+    if order_expr:
+        lines.append(f'{indent}\t<orderExpression>')
+        lines.append(f'{indent}\t\t<dcscom:expression>{esc_xml(str(order_expr.get("expression", "")))}</dcscom:expression>')
+        lines.append(f'{indent}\t\t<dcscom:orderType>{esc_xml(str(order_expr.get("orderType", "Asc")))}</dcscom:orderType>')
+        auto_order = 'true' if order_expr.get('autoOrder') else 'false'
+        lines.append(f'{indent}\t\t<dcscom:autoOrder>{auto_order}</dcscom:autoOrder>')
+        lines.append(f'{indent}\t</orderExpression>')
 
     # ValueType
     if f.get('type'):
@@ -845,17 +906,50 @@ def emit_field(lines, field_def, indent):
         emit_value_type(lines, f['type'], f'{indent}\t\t')
         lines.append(f'{indent}\t</valueType>')
 
+    # Параметры ввода поля: параметры выбора, связи параметров выбора и простое
+    # типизированное значение. Платформа пишет значение с явным типом, а не отдельными
+    # элементами; признак использования идет ПЕРЕД именем параметра.
+    if f.get('inputParameters'):
+        lines.append(f'{indent}\t<inputParameters>')
+        for ip in f['inputParameters']:
+            lines.append(f'{indent}\t\t<dcscor:item>')
+            if ip.get('use') is False:
+                lines.append(f'{indent}\t\t\t<dcscor:use>false</dcscor:use>')
+            lines.append(f'{indent}\t\t\t<dcscor:parameter>{esc_xml(str(ip.get("parameter", "")))}</dcscor:parameter>')
+            if 'choiceParameters' in ip:
+                if not ip['choiceParameters']:
+                    lines.append(f'{indent}\t\t\t<dcscor:value xsi:type=\"dcscor:ChoiceParameters\"/>')
+                else:
+                    lines.append(f'{indent}\t\t\t<dcscor:value xsi:type=\"dcscor:ChoiceParameters\">')
+                    for cp in ip['choiceParameters']:
+                        lines.append(f'{indent}\t\t\t\t<dcscor:item>')
+                        lines.append(f'{indent}\t\t\t\t\t<dcscor:choiceParameter>{esc_xml(str(cp.get("name", "")))}</dcscor:choiceParameter>')
+                        for value in (cp.get('values') or []):
+                            lines.append(f'{indent}\t\t\t\t\t<dcscor:value xsi:type=\"dcscor:DesignTimeValue\">{esc_xml(str(value))}</dcscor:value>')
+                        lines.append(f'{indent}\t\t\t\t</dcscor:item>')
+                    lines.append(f'{indent}\t\t\t</dcscor:value>')
+            elif 'choiceParameterLinks' in ip:
+                lines.append(f'{indent}\t\t\t<dcscor:value xsi:type=\"dcscor:ChoiceParameterLinks\">')
+                for link in ip['choiceParameterLinks']:
+                    lines.append(f'{indent}\t\t\t\t<dcscor:item>')
+                    lines.append(f'{indent}\t\t\t\t\t<dcscor:choiceParameter>{esc_xml(str(link.get("name", "")))}</dcscor:choiceParameter>')
+                    lines.append(f'{indent}\t\t\t\t\t<dcscor:value>{esc_xml(str(link.get("value", "")))}</dcscor:value>')
+                    mode = str(link.get('mode') or 'Clear')
+                    lines.append(f'{indent}\t\t\t\t\t<dcscor:mode xmlns:d8p1=\"http://v8.1c.ru/8.1/data/enterprise\" xsi:type=\"d8p1:LinkedValueChangeMode\">{esc_xml(mode)}</dcscor:mode>')
+                    lines.append(f'{indent}\t\t\t\t</dcscor:item>')
+                lines.append(f'{indent}\t\t\t</dcscor:value>')
+            elif 'value' in ip:
+                xsi_type, text = design_time_value(ip['value'])
+                lines.append(f'{indent}\t\t\t<dcscor:value xsi:type=\"{xsi_type}\">{text}</dcscor:value>')
+            lines.append(f'{indent}\t\t</dcscor:item>')
+        lines.append(f'{indent}\t</inputParameters>')
+
     # Appearance
     if f.get('appearance') and len(f['appearance']) > 0:
         lines.append(f'{indent}\t<appearance>')
         for key, val in f['appearance'].items():
-            lines.append(f'{indent}\t\t<dcscor:item xsi:type="dcsset:SettingsParameterValue">')
-            lines.append(f'{indent}\t\t\t<dcscor:parameter>{esc_xml(key)}</dcscor:parameter>')
-            if key == '\u0413\u043e\u0440\u0438\u0437\u043e\u043d\u0442\u0430\u043b\u044c\u043d\u043e\u0435\u041f\u043e\u043b\u043e\u0436\u0435\u043d\u0438\u0435':
-                lines.append(f'{indent}\t\t\t<dcscor:value xsi:type="v8ui:HorizontalAlign">{esc_xml(val)}</dcscor:value>')
-            else:
-                lines.append(f'{indent}\t\t\t<dcscor:value xsi:type="xs:string">{esc_xml(val)}</dcscor:value>')
-            lines.append(f'{indent}\t\t</dcscor:item>')
+            # Оформление поля пишется тем же кодом, что и условное: значение бывает многоязычным.
+            emit_appearance_value(lines, key, val, f'{indent}\t\t')
         lines.append(f'{indent}\t</appearance>')
 
     # PresentationExpression
@@ -867,7 +961,7 @@ def emit_field(lines, field_def, indent):
 
 # === DataSets ===
 
-def emit_data_set(lines, ds, indent, default_source):
+def emit_data_set(lines, ds, indent, default_source, as_union_item=False):
     # Determine type
     if ds.get('items'):
         ds_type = 'DataSetUnion'
@@ -876,7 +970,9 @@ def emit_data_set(lines, ds, indent, default_source):
     else:
         ds_type = 'DataSetQuery'
 
-    lines.append(f'{indent}<dataSet xsi:type="{ds_type}">')
+    # Вложенный набор объединения платформа выгружает тегом item.
+    ds_tag = 'item' if as_union_item else 'dataSet'
+    lines.append(f'{indent}<{ds_tag} xsi:type="{ds_type}">')
     lines.append(f'{indent}\t<name>{esc_xml(str(ds.get("name", "")))}</name>')
 
     # Fields
@@ -899,9 +995,9 @@ def emit_data_set(lines, ds, indent, default_source):
         lines.append(f'{indent}\t<objectName>{esc_xml(str(ds["objectName"]))}</objectName>')
     elif ds_type == 'DataSetUnion':
         for item in ds['items']:
-            emit_data_set(lines, item, f'{indent}\t', default_source)
+            emit_data_set(lines, item, f'{indent}\t', default_source, as_union_item=True)
 
-    lines.append(f'{indent}</dataSet>')
+    lines.append(f'{indent}</{ds_tag}>')
 
 
 def emit_data_sets(lines, defn, default_source):
@@ -1043,18 +1139,30 @@ def emit_total_fields(lines, defn):
 
 # === Parameters ===
 
-def emit_param_value(lines, type_str, val, indent):
+REF_TYPE_RE = re.compile(r'^[A-Za-z]+Ref\.')
+
+
+def emit_empty_param_value(lines, type_str, indent):
+    """Параметр без значения: ссылочный тип и тип без указания дают nil, строка - пустой элемент."""
+    if not type_str or REF_TYPE_RE.match(type_str):
+        lines.append(f'{indent}<value xsi:nil="true"/>')
+    elif type_str.startswith('string'):
+        lines.append(f'{indent}<value xsi:type="xs:string"/>')
+
+
+def emit_param_value(lines, type_str, val, indent, auto_dates=False):
     if val is None:
         return
 
     val_str = str(val)
 
     if type_str == 'StandardPeriod':
-        # Always emit startDate/endDate to match how 1C Designer saves the schema.
+        # Границы периода пишутся, только когда их не считает сам вариант периода.
         lines.append(f'{indent}<value xsi:type="v8:StandardPeriod">')
         lines.append(f'{indent}\t<v8:variant xsi:type="v8:StandardPeriodVariant">{esc_xml(val_str)}</v8:variant>')
-        lines.append(f'{indent}\t<v8:startDate>0001-01-01T00:00:00</v8:startDate>')
-        lines.append(f'{indent}\t<v8:endDate>0001-01-01T00:00:00</v8:endDate>')
+        if not auto_dates:
+            lines.append(f'{indent}\t<v8:startDate>0001-01-01T00:00:00</v8:startDate>')
+            lines.append(f'{indent}\t<v8:endDate>0001-01-01T00:00:00</v8:endDate>')
         lines.append(f'{indent}</value>')
     elif type_str and re.match(r'^date', type_str):
         lines.append(f'{indent}<value xsi:type="xs:dateTime">{esc_xml(val_str)}</value>')
@@ -1099,16 +1207,21 @@ def emit_single_param(lines, p, parsed):
         lines.append('\t\t</valueType>')
 
     # Value
-    emit_param_value(lines, parsed.get('type', ''), parsed.get('value'), '\t\t')
+    if parsed.get('value') is None:
+        if not parsed.get('valueListAllowed'):
+            emit_empty_param_value(lines, parsed.get('type', ''), '\t\t')
+    else:
+        emit_param_value(lines, parsed.get('type', ''), parsed.get('value'), '\t\t',
+                         bool(parsed.get('autoDates')))
 
     # Hidden implies useRestriction=true + availableAsField=false
     if parsed.get('hidden') is True:
         parsed['availableAsField'] = False
         parsed['useRestriction'] = True
 
-    # UseRestriction
-    if parsed.get('useRestriction') is True or (p is not None and not isinstance(p, str) and p.get('useRestriction') is True):
-        lines.append('\t\t<useRestriction>true</useRestriction>')
+    # Признак ограничения пишется у каждого параметра, а не только когда он включен.
+    restrict = parsed.get('useRestriction') is True or (p is not None and not isinstance(p, str) and p.get('useRestriction') is True)
+    lines.append(f'\t\t<useRestriction>{"true" if restrict else "false"}</useRestriction>')
 
     # Expression
     if parsed.get('expression'):
@@ -1209,6 +1322,7 @@ def emit_parameters(lines, defn):
             'hidden': bool(parsed.get('hidden')),
             'type': parsed.get('type', ''),
             'value': parsed.get('value'),
+            'autoDates': bool(parsed.get('autoDates')),
         })
 
         # @autoDates: auto-generate НачалоПериода and КонецПериода (canonical БСП pattern)
@@ -1217,7 +1331,7 @@ def emit_parameters(lines, defn):
             begin_parsed = {
                 'name': '\u041d\u0430\u0447\u0430\u043b\u043e\u041f\u0435\u0440\u0438\u043e\u0434\u0430',
                 'title': '\u041d\u0430\u0447\u0430\u043b\u043e \u043f\u0435\u0440\u0438\u043e\u0434\u0430',
-                'type': 'date', 'value': '0001-01-01T00:00:00',
+                'type': 'dateTime', 'value': '0001-01-01T00:00:00',
                 'useRestriction': True,
                 'expression': f'&{param_name}.\u0414\u0430\u0442\u0430\u041d\u0430\u0447\u0430\u043b\u0430',
             }
@@ -1225,7 +1339,7 @@ def emit_parameters(lines, defn):
             end_parsed = {
                 'name': '\u041a\u043e\u043d\u0435\u0446\u041f\u0435\u0440\u0438\u043e\u0434\u0430',
                 'title': '\u041a\u043e\u043d\u0435\u0446 \u043f\u0435\u0440\u0438\u043e\u0434\u0430',
-                'type': 'date', 'value': '0001-01-01T00:00:00',
+                'type': 'dateTime', 'value': '0001-01-01T00:00:00',
                 'useRestriction': True,
                 'expression': f'&{param_name}.\u0414\u0430\u0442\u0430\u041e\u043a\u043e\u043d\u0447\u0430\u043d\u0438\u044f',
             }
@@ -1258,6 +1372,13 @@ AREA_STYLE_PRESETS = {
         'hAlign': None, 'vAlign': None, 'wrap': False,
         'bgColor': None, 'textColor': None,
         'borderColor': 'style:ReportLineColor', 'borders': True,
+    },
+    # Оформления нет вовсе: у ячейки остается только ширина.
+    'none': {
+        'font': None, 'fontSize': None, 'bold': False, 'italic': False,
+        'hAlign': None, 'vAlign': None, 'wrap': False,
+        'bgColor': None, 'textColor': None,
+        'borderColor': None, 'borders': False,
     },
 }
 
@@ -1296,8 +1417,9 @@ def _emit_color_value(lines, color, indent):
 
 
 def _emit_cell_appearance(lines, style, width=0, v_merge=False, h_merge=False, min_height=0, extra_items=None):
-    ind = '\t\t\t\t\t'
-    lines.append('\t\t\t\t<dcsat:appearance>')
+    # Оформление - такой же дочерний элемент ячейки, как и item рядом с ним.
+    ind = '\t\t\t\t\t\t'
+    lines.append('\t\t\t\t\t<dcsat:appearance>')
     # Background color
     if style.get('bgColor'):
         lines.append(f'{ind}<dcscor:item>')
@@ -1333,10 +1455,11 @@ def _emit_cell_appearance(lines, style, width=0, v_merge=False, h_merge=False, m
     # Font
     bold_str = 'true' if style.get('bold') else 'false'
     italic_str = 'true' if style.get('italic') else 'false'
-    lines.append(f'{ind}<dcscor:item>')
-    lines.append(f'{ind}\t<dcscor:parameter>\u0428\u0440\u0438\u0444\u0442</dcscor:parameter>')
-    lines.append(f'{ind}\t<dcscor:value xsi:type="v8ui:Font" faceName="{style["font"]}" height="{style["fontSize"]}" bold="{bold_str}" italic="{italic_str}" underline="false" strikeout="false" kind="Absolute" scale="100"/>')
-    lines.append(f'{ind}</dcscor:item>')
+    if style.get('font'):
+        lines.append(f'{ind}<dcscor:item>')
+        lines.append(f'{ind}\t<dcscor:parameter>\u0428\u0440\u0438\u0444\u0442</dcscor:parameter>')
+        lines.append(f'{ind}\t<dcscor:value xsi:type="v8ui:Font" faceName="{style["font"]}" height="{style["fontSize"]}" bold="{bold_str}" italic="{italic_str}" underline="false" strikeout="false" kind="Absolute" scale="100"/>')
+        lines.append(f'{ind}</dcscor:item>')
     # Horizontal alignment
     if style.get('hAlign'):
         lines.append(f'{ind}<dcscor:item>')
@@ -1387,7 +1510,7 @@ def _emit_cell_appearance(lines, style, width=0, v_merge=False, h_merge=False, m
     if extra_items:
         for ei in extra_items:
             lines.append(ei)
-    lines.append('\t\t\t\t</dcsat:appearance>')
+    lines.append('\t\t\t\t\t</dcsat:appearance>')
 
 
 def _emit_area_template_dsl(lines, t):
@@ -1397,7 +1520,20 @@ def _emit_area_template_dsl(lines, t):
         style_name = 'data'
     style = AREA_STYLE_PRESETS[style_name]
 
-    rows = list(t['rows'])
+    # Ячейка со своим стилем разворачивается до всего прочего: маркеры объединения у нее
+    # такие же, как у строковой, и карты объединения должны их видеть.
+    cell_styles = {}
+    rows = []
+    for r_i, src_row in enumerate(t['rows']):
+        row = []
+        for c_i, cell in enumerate(src_row):
+            if isinstance(cell, dict) and 'value' in cell:
+                if cell.get('style'):
+                    cell_styles[(r_i, c_i)] = str(cell['style'])
+                row.append(cell.get('value'))
+            else:
+                row.append(cell)
+        rows.append(row)
     widths = list(t.get('widths', []))
     min_height = float(t.get('minHeight', 0))
     col_count = len(widths) if widths else len(rows[0])
@@ -1440,11 +1576,20 @@ def _emit_area_template_dsl(lines, t):
             w = float(widths[c]) if c < len(widths) else 0
             is_v_merged = v_merge.get(r, {}).get(c, False)
             is_h_merged = h_merge.get(r, {}).get(c, False)
+            # Ячейка задается строкой либо объектом со своим стилем: тогда оформление
+            # берется от нее, а не от макета. Объединенная ячейка тоже несет свое.
+            cell_style = style
+            if (r, c) in cell_styles:
+                cell_style_name = cell_styles[(r, c)]
+                if cell_style_name not in AREA_STYLE_PRESETS:
+                    print(f"Warning: Unknown area style preset '{cell_style_name}', falling back to '{style_name}'", file=sys.stderr)
+                    cell_style_name = style_name
+                cell_style = AREA_STYLE_PRESETS[cell_style_name]
             lines.append('\t\t\t\t<dcsat:tableCell>')
             if is_v_merged:
-                _emit_cell_appearance(lines, style, w, True)
+                _emit_cell_appearance(lines, cell_style, w, True)
             elif is_h_merged:
-                _emit_cell_appearance(lines, style, w, h_merge=True)
+                _emit_cell_appearance(lines, cell_style, w, h_merge=True)
             else:
                 cell_extra_items = []
                 if cell_val is not None and str(cell_val) != '':
@@ -1463,10 +1608,10 @@ def _emit_area_template_dsl(lines, t):
                         # Build drilldown appearance extra items
                         if param_name in drilldown_map:
                             dd_val = drilldown_map[param_name]
-                            cell_extra_items.append('\t\t\t\t\t<dcscor:item>')
-                            cell_extra_items.append(f'\t\t\t\t\t\t<dcscor:parameter>\u0420\u0430\u0441\u0448\u0438\u0444\u0440\u043e\u0432\u043a\u0430</dcscor:parameter>')
-                            cell_extra_items.append(f'\t\t\t\t\t\t<dcscor:value xsi:type="dcscor:Parameter">\u0420\u0430\u0441\u0448\u0438\u0444\u0440\u043e\u0432\u043a\u0430_{dd_val}</dcscor:value>')
-                            cell_extra_items.append('\t\t\t\t\t</dcscor:item>')
+                            cell_extra_items.append('\t\t\t\t\t\t<dcscor:item>')
+                            cell_extra_items.append(f'\t\t\t\t\t\t\t\t<dcscor:parameter>\u0420\u0430\u0441\u0448\u0438\u0444\u0440\u043e\u0432\u043a\u0430</dcscor:parameter>')
+                            cell_extra_items.append(f'\t\t\t\t\t\t\t\t<dcscor:value xsi:type="dcscor:Parameter">\u0420\u0430\u0441\u0448\u0438\u0444\u0440\u043e\u0432\u043a\u0430_{dd_val}</dcscor:value>')
+                            cell_extra_items.append('\t\t\t\t\t\t</dcscor:item>')
                     else:
                         lines.append('\t\t\t\t\t<dcsat:item xsi:type="dcsat:Field">')
                         lines.append('\t\t\t\t\t\t<dcsat:value xsi:type="v8:LocalStringType">')
@@ -1477,7 +1622,7 @@ def _emit_area_template_dsl(lines, t):
                         lines.append('\t\t\t\t\t\t</dcsat:value>')
                         lines.append('\t\t\t\t\t</dcsat:item>')
                 h = min_height if r == 0 else 0
-                _emit_cell_appearance(lines, style, w, False, False, h, cell_extra_items or None)
+                _emit_cell_appearance(lines, cell_style, w, False, False, h, cell_extra_items or None)
             lines.append('\t\t\t\t</dcsat:tableCell>')
         lines.append('\t\t\t</dcsat:item>')
 
@@ -1562,7 +1707,20 @@ def emit_selection(lines, items, indent, skip_auto=False):
     if not items or len(items) == 0:
         return
 
-    lines.append(f'{indent}<dcsset:selection>')
+    # Отбор пишется в свой буфер: если после пропуска автополей не осталось ни одного
+    # элемента, блок выгружается одним тегом, а не пустой парой.
+    outer = lines
+    lines = []
+    emit_selection_items(lines, items, indent, skip_auto)
+    if lines:
+        outer.append(f'{indent}<dcsset:selection>')
+        outer.extend(lines)
+        outer.append(f'{indent}</dcsset:selection>')
+    else:
+        outer.append(f'{indent}<dcsset:selection/>')
+
+
+def emit_selection_items(lines, items, indent, skip_auto=False):
     for item in items:
         if isinstance(item, str):
             if item == 'Auto':
@@ -1580,11 +1738,7 @@ def emit_selection(lines, items, indent, skip_auto=False):
             lines.append(f'{indent}\t\t\t\t<v8:content>{esc_xml(str(item["folder"]))}</v8:content>')
             lines.append(f'{indent}\t\t\t</v8:item>')
             lines.append(f'{indent}\t\t</dcsset:lwsTitle>')
-            for sub in (item.get('items') or []):
-                sub_name = str(sub.get('field', sub)) if isinstance(sub, dict) else str(sub)
-                lines.append(f'{indent}\t\t<dcsset:item xsi:type="dcsset:SelectedItemField">')
-                lines.append(f'{indent}\t\t\t<dcsset:field>{esc_xml(sub_name)}</dcsset:field>')
-                lines.append(f'{indent}\t\t</dcsset:item>')
+            emit_selection_items(lines, item.get('items') or [], f'{indent}\t', skip_auto)
             lines.append(f'{indent}\t\t<dcsset:placement>Auto</dcsset:placement>')
             lines.append(f'{indent}\t</dcsset:item>')
         else:
@@ -1598,7 +1752,6 @@ def emit_selection(lines, items, indent, skip_auto=False):
                 lines.append(f'{indent}\t\t\t</v8:item>')
                 lines.append(f'{indent}\t\t</dcsset:lwsTitle>')
             lines.append(f'{indent}\t</dcsset:item>')
-    lines.append(f'{indent}</dcsset:selection>')
 
 
 def emit_filter_item(lines, item, indent):
@@ -1739,16 +1892,36 @@ def emit_order(lines, items, indent, skip_auto=False):
 def emit_appearance_value(lines, key, val, indent):
     lines.append(f'{indent}<dcscor:item xsi:type="dcsset:SettingsParameterValue">')
 
+    # Значение оформления бывает многоязычным: объект "язык: текст" вместо строки.
+    ml_value = None
     if isinstance(val, dict) and val.get('use') is False:
         lines.append(f'{indent}\t<dcscor:use>false</dcscor:use>')
         lines.append(f'{indent}\t<dcscor:parameter>{esc_xml(key)}</dcscor:parameter>')
-        actual_val = str(val.get('value', ''))
+        inner = val.get('value', '')
+        if isinstance(inner, dict):
+            ml_value = inner
+        actual_val = str(inner)
     else:
         lines.append(f'{indent}\t<dcscor:parameter>{esc_xml(key)}</dcscor:parameter>')
+        if isinstance(val, dict):
+            ml_value = val
         actual_val = str(val)
 
+    if ml_value is not None:
+        lines.append(f'{indent}\t<dcscor:value xsi:type="v8:LocalStringType">')
+        for lang, content in ml_value.items():
+            lines.append(f'{indent}\t\t<v8:item>')
+            lines.append(f'{indent}\t\t\t<v8:lang>{esc_xml(str(lang))}</v8:lang>')
+            lines.append(f'{indent}\t\t\t<v8:content>{esc_xml(str(content))}</v8:content>')
+            lines.append(f'{indent}\t\t</v8:item>')
+        lines.append(f'{indent}\t</dcscor:value>')
+        lines.append(f'{indent}</dcscor:item>')
+        return
+
     # Auto-detect value type
-    if re.match(r'^(style|web|win):', actual_val):
+    if key == 'ГоризонтальноеПоложение':
+        lines.append(f'{indent}\t<dcscor:value xsi:type="v8ui:HorizontalAlign">{esc_xml(actual_val)}</dcscor:value>')
+    elif re.match(r'^(style|web|win):', actual_val):
         lines.append(f'{indent}\t<dcscor:value xsi:type="v8ui:Color">{esc_xml(actual_val)}</dcscor:value>')
     elif actual_val == 'true' or actual_val == 'false':
         lines.append(f'{indent}\t<dcscor:value xsi:type="xs:boolean">{actual_val}</dcscor:value>')
@@ -1759,6 +1932,9 @@ def emit_appearance_value(lines, key, val, indent):
         lines.append(f'{indent}\t\t\t<v8:content>{esc_xml(actual_val)}</v8:content>')
         lines.append(f'{indent}\t\t</v8:item>')
         lines.append(f'{indent}\t</dcscor:value>')
+    elif re.match(r'^-?\d+(\.\d+)?$', actual_val):
+        # Числовое свойство оформления (ширина, высота, отступ) пишется числом.
+        lines.append(f'{indent}\t<dcscor:value xsi:type="xs:decimal">{actual_val}</dcscor:value>')
     else:
         lines.append(f'{indent}\t<dcscor:value xsi:type="xs:string">{esc_xml(actual_val)}</dcscor:value>')
     lines.append(f'{indent}</dcscor:item>')
@@ -1783,9 +1959,11 @@ def emit_conditional_appearance(lines, items, indent):
         else:
             lines.append(f'{indent}\t\t<dcsset:selection/>')
 
-        # Filter
+        # Отбор пишется всегда: без него платформа не читает элемент оформления.
         if ca.get('filter'):
             emit_filter(lines, ca['filter'], f'{indent}\t\t')
+        else:
+            lines.append(f'{indent}\t\t<dcsset:filter/>')
 
         # Appearance
         if ca.get('appearance'):
@@ -1873,8 +2051,9 @@ def emit_data_parameters(lines, items, indent):
                 # StandardPeriod
                 lines.append(f'{indent}\t\t<dcscor:value xsi:type="v8:StandardPeriod">')
                 lines.append(f'{indent}\t\t\t<v8:variant xsi:type="v8:StandardPeriodVariant">{esc_xml(str(val["variant"]))}</v8:variant>')
-                lines.append(f'{indent}\t\t\t<v8:startDate>0001-01-01T00:00:00</v8:startDate>')
-                lines.append(f'{indent}\t\t\t<v8:endDate>0001-01-01T00:00:00</v8:endDate>')
+                if not dp.get('autoDates'):
+                    lines.append(f'{indent}\t\t\t<v8:startDate>0001-01-01T00:00:00</v8:startDate>')
+                    lines.append(f'{indent}\t\t\t<v8:endDate>0001-01-01T00:00:00</v8:endDate>')
                 lines.append(f'{indent}\t\t</dcscor:value>')
             elif vtype == 'boolean' or isinstance(val, bool):
                 bv = str(val).lower()
@@ -1918,6 +2097,10 @@ def emit_group_items(lines, group_by, indent):
     lines.append(f'{indent}<dcsset:groupItems>')
     for field in group_by:
         if isinstance(field, str):
+            # Auto - автоматическая группировка, у нее нет ни поля, ни вида.
+            if field == 'Auto':
+                lines.append(f'{indent}\t<dcsset:item xsi:type="dcsset:GroupItemAuto"/>')
+                continue
             lines.append(f'{indent}\t<dcsset:item xsi:type="dcsset:GroupItemField">')
             lines.append(f'{indent}\t\t<dcsset:field>{esc_xml(field)}</dcsset:field>')
             lines.append(f'{indent}\t\t<dcsset:groupType>Items</dcsset:groupType>')
@@ -1994,6 +2177,21 @@ def emit_structure_item(lines, item, indent):
             for child in item['children']:
                 emit_structure_item(lines, child, f'{indent}\t')
 
+        lines.append(f'{indent}</dcsset:item>')
+
+    elif item_type == 'nestedObject':
+        # Вложенный объект: своя выборка поверх набора данных, названного objectID.
+        lines.append(f'{indent}<dcsset:item xsi:type="dcsset:StructureItemNestedObject">')
+        lines.append(f'{indent}\t<dcsset:objectID>{esc_xml(str(item.get("objectID", "")))}</dcsset:objectID>')
+        nested = item.get('settings') or {}
+        lines.append(f'{indent}\t<dcsset:settings>')
+        emit_selection(lines, nested.get('selection'), f'{indent}\t\t')
+        if nested.get('order'):
+            emit_order(lines, nested['order'], f'{indent}\t\t')
+        emit_filter(lines, nested.get('filter'), f'{indent}\t\t')
+        if nested.get('outputParameters'):
+            emit_output_parameters(lines, nested['outputParameters'], f'{indent}\t\t')
+        lines.append(f'{indent}\t</dcsset:settings>')
         lines.append(f'{indent}</dcsset:item>')
 
     elif item_type == 'table':
@@ -2094,7 +2292,7 @@ def emit_settings_variants(lines, defn):
 
         # Selection
         if s.get('selection'):
-            emit_selection(lines, s['selection'], '\t\t\t', skip_auto=True)
+            emit_selection(lines, s['selection'], '\t\t\t')
 
         # Filter
         if s.get('filter'):
@@ -2102,7 +2300,7 @@ def emit_settings_variants(lines, defn):
 
         # Order
         if s.get('order'):
-            emit_order(lines, s['order'], '\t\t\t', skip_auto=True)
+            emit_order(lines, s['order'], '\t\t\t')
 
         # ConditionalAppearance
         if s.get('conditionalAppearance'):
@@ -2111,6 +2309,16 @@ def emit_settings_variants(lines, defn):
         # OutputParameters
         if s.get('outputParameters'):
             emit_output_parameters(lines, s['outputParameters'], '\t\t\t')
+
+        # Дополнительные свойства: имя идет в атрибут и требует экранирования кавычки,
+        # значение - в содержимое, где кавычка допустима.
+        if s.get('additionalProperties'):
+            lines.append('\t\t\t<dcsset:additionalProperties>')
+            for prop_name, prop_value in s['additionalProperties'].items():
+                lines.append(f'\t\t\t\t<v8:Property name="{esc_attr(str(prop_name))}">')
+                lines.append(f'\t\t\t\t\t<v8:Value xsi:type="xs:string">{esc_xml(str(prop_value))}</v8:Value>')
+                lines.append('\t\t\t\t</v8:Property>')
+            lines.append('\t\t\t</dcsset:additionalProperties>')
 
         # DataParameters
         if s.get('dataParameters') == 'auto':
@@ -2137,6 +2345,8 @@ def emit_settings_variants(lines, defn):
                         elif str(av):
                             variant = str(av)
                     item['value'] = {'variant': variant}
+                    if ap.get('autoDates'):
+                        item['autoDates'] = True
                     if variant != 'Custom':
                         has_meaningful_value = True
                 elif ap.get('value') is not None and str(ap.get('value')) != '':
@@ -2238,14 +2448,8 @@ def main():
     lines = []
 
     lines.append('<?xml version="1.0" encoding="UTF-8"?>')
-    lines.append('<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"')
-    lines.append('\t\txmlns:dcscom="http://v8.1c.ru/8.1/data-composition-system/common"')
-    lines.append('\t\txmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core"')
-    lines.append('\t\txmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings"')
-    lines.append('\t\txmlns:v8="http://v8.1c.ru/8.1/data/core"')
-    lines.append('\t\txmlns:v8ui="http://v8.1c.ru/8.1/data/ui"')
-    lines.append('\t\txmlns:xs="http://www.w3.org/2001/XMLSchema"')
-    lines.append('\t\txmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">')
+    # Платформа пишет шапку схемы одной строкой.
+    lines.append('<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcscom="http://v8.1c.ru/8.1/data-composition-system/common" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">')
 
     emit_data_sources(lines, data_sources)
     emit_data_sets(lines, defn, default_source)
@@ -2269,7 +2473,8 @@ def main():
     if parent_dir and not os.path.exists(parent_dir):
         os.makedirs(parent_dir, exist_ok=True)
 
-    content = '\n'.join(lines) + '\n'
+    # Платформа не оставляет перевод строки после закрывающего тега.
+    content = '\n'.join(lines)
     write_utf8_bom(output_path, content)
 
     # --- 5. Statistics ---

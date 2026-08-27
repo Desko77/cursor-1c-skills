@@ -212,11 +212,23 @@ def esc_xml(s):
 def new_uuid():
     return str(uuid.uuid4())
 
-def write_utf8_bom(path, content):
+def detect_file_eol(path):
+    """Конец строки существующего файла; у нового - канонический CRLF."""
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return '\r\n'
+    return '\r\n' if b'\r\n' in data or b'\n' not in data else '\n'
+
+
+def write_utf8_bom(path, content, eol='\r\n'):
     # Исходники 1С хранятся в CRLF: этого ждет Конфигуратор, и это закреплено в .gitattributes.
     # Сборка идет через '\n'.join, поэтому концы строк разворачиваются здесь, на записи.
     # Нормализация идемпотентна - смешанный текст тоже приходит к одному виду.
-    content = content.replace('\r\n', '\n').replace('\n', '\r\n')
+    # Правка существующего файла передает сюда его собственный eol: форсировать CRLF там
+    # нельзя, иначе навык переписывает весь чужой файл ради одной добавленной строки.
+    content = content.replace('\r\n', '\n').replace('\n', eol)
     with open(path, 'w', encoding='utf-8-sig', newline='') as f:
         f.write(content)
 
@@ -242,7 +254,12 @@ def emit_mltext(indent, tag, text):
     X(f'{indent}<{tag}>')
     for lang, content in ml_items:
         X(f'{indent}\t<v8:item>')
-        X(f'{indent}\t\t<v8:lang>{lang}</v8:lang>')
+        # Пустой язык платформа пишет одиночным тегом: пара с пустым содержимым не совпадает
+        # с выгрузкой.
+        if lang:
+            X(f'{indent}\t\t<v8:lang>{lang}</v8:lang>')
+        else:
+            X(f'{indent}\t\t<v8:lang/>')
         X(f'{indent}\t\t<v8:content>{esc_xml(content)}</v8:content>')
         X(f'{indent}\t</v8:item>')
     X(f'{indent}</{tag}>')
@@ -257,7 +274,9 @@ def split_camel_case(name):
     result = re.sub(r'([а-яё])([А-ЯЁ])', r'\1 \2', name)
     result = re.sub(r'([a-z])([A-Z])', r'\1 \2', result)
     if len(result) > 1:
-        result = result[0] + result[1:].lower()
+        tail = re.sub(r'(?<![А-ЯЁA-Z])([А-ЯЁA-Z])(?![А-ЯЁA-Z])',
+                      lambda m: m.group(1).lower(), result[1:])
+        result = result[0] + tail
     return result
 
 # ---------------------------------------------------------------------------
@@ -460,7 +479,7 @@ valid_enum_values = {
     'RegisterRecordsDeletion': ['AutoDelete', 'AutoDeleteOnUnpost', 'AutoDeleteOff'],
     'RegisterRecordsWritingOnPost': ['WriteModified', 'WriteSelected', 'WriteAll'],
     'ReturnValuesReuse': ['DontUse', 'DuringRequest', 'DuringSession'],
-    'ReuseSessions': ['DontUse', 'AutoUse'],
+    'ReuseSessions': ['DontUse', 'Use', 'AutoUse'],
     'FillChecking': ['DontCheck', 'ShowError', 'ShowWarning'],
     'Indexing': ['DontIndex', 'Index', 'IndexWithAdditionalOrder'],
     'SubordinationUse': ['ToItems', 'ToFolders', 'ToFoldersAndItems'],
@@ -671,6 +690,12 @@ type_synonyms = {
 def resolve_type_str(type_str):
     if not type_str:
         return type_str
+    # Тип, скопированный из выгрузки, несет префикс пространства имен: cfg:, d5p1:, d4p1:.
+    # Срезается только префикс выгрузки конфигурации: схемные префиксы (v8:, xs:, v8ui:)
+    # часть имени типа, и без них тип не разрешается.
+    m_prefix = re.match(r'^(?:cfg|d\d+p\d+):(.+)$', type_str)
+    if m_prefix:
+        type_str = m_prefix.group(1)
     # Parameterized types: Number(15,2), Строка(100), etc.
     m = re.match(r'^([^(]+)\((.+)\)$', type_str)
     if m:
@@ -698,11 +723,41 @@ def resolve_type_str(type_str):
 def emit_type_content(indent, type_str, cfg_prefix=False):
     if not type_str:
         return
-    # Composite type: "Type1 + Type2 + Type3"
+    # Составной тип платформа пишет блоками: сперва все типы, затем наборы типов, затем
+    # квалификаторы по одному на вид - числовой, строковый, дата. Наш вывод шел парами
+    # тип-квалификатор, и файл расходился с выгрузкой на каждом составном типе.
     if ' + ' in type_str:
         parts = [p.strip() for p in type_str.split('+')]
+        type_lines, set_lines, quals = [], [], {}
         for part in parts:
+            start = len(lines)
             emit_type_content(indent, part, cfg_prefix)
+            chunk = lines[start:]
+            del lines[start:]
+            open_kind = None
+            for line in chunk:
+                stripped = line.strip()
+                if open_kind:
+                    quals[open_kind].append(line)
+                    if stripped == f'</v8:{open_kind}>':
+                        open_kind = None
+                    continue
+                m_qual = re.match(r'<v8:(\w+Qualifiers)>', stripped)
+                if m_qual:
+                    open_kind = m_qual.group(1)
+                    quals.setdefault(open_kind, []).append(line)
+                elif stripped.startswith('<v8:TypeSet'):
+                    set_lines.append(line)
+                elif stripped.startswith('<v8:Type'):
+                    type_lines.append(line)
+                else:
+                    type_lines.append(line)
+        for line in type_lines + set_lines:
+            X(line)
+        ordered = ['NumberQualifiers', 'StringQualifiers', 'DateQualifiers']
+        for kind in ordered + [k for k in quals if k not in ordered]:
+            for line in quals.get(kind, []):
+                X(line)
         return
     type_str = resolve_type_str(type_str)
     # Boolean
@@ -773,6 +828,11 @@ def emit_type_content(indent, type_str, cfg_prefix=False):
             X(f'{indent}<v8:Type>cfg:{type_str}</v8:Type>')
         else:
             X(f'{indent}<v8:Type xmlns:d5p1="http://v8.1c.ru/8.1/data/enterprise/current-config">d5p1:{type_str}</v8:Type>')
+        return
+    # Ссылочный тип без имени объекта - это НАБОР типов, а не тип: любой справочник,
+    # любой документ. Платформа пишет его элементом TypeSet.
+    if re.fullmatch(r'CatalogRef|DocumentRef|EnumRef|ChartOfAccountsRef|ChartOfCharacteristicTypesRef|ChartOfCalculationTypesRef|ExchangePlanRef|BusinessProcessRef|TaskRef', type_str):
+        X(f'{indent}<v8:TypeSet>cfg:{type_str}</v8:TypeSet>')
         return
     # Fallback
     X(f'{indent}<v8:Type>{type_str}</v8:Type>')
@@ -1044,7 +1104,7 @@ standard_attributes_by_type = {
     'InformationRegister': ['Active', 'LineNumber', 'Recorder', 'Period'],
     'AccumulationRegister': ['Active', 'LineNumber', 'Recorder', 'Period'],
     'AccountingRegister': ['Active', 'Period', 'Recorder', 'LineNumber', 'Account'],
-    'CalculationRegister': ['Active', 'Recorder', 'LineNumber', 'RegistrationPeriod', 'CalculationType', 'ReversingEntry'],
+    'CalculationRegister': ['RegistrationPeriod', 'ReversingEntry', 'Active', 'EndOfBasePeriod', 'BegOfBasePeriod', 'EndOfActionPeriod', 'BegOfActionPeriod', 'ActionPeriod', 'CalculationType', 'LineNumber', 'Recorder'],
     'ChartOfAccounts': ['PredefinedDataName', 'Predefined', 'Ref', 'DeletionMark', 'Description', 'Code', 'Parent', 'Order', 'Type', 'OffBalance'],
     'ChartOfCharacteristicTypes': ['PredefinedDataName', 'Predefined', 'Ref', 'DeletionMark', 'Description', 'Code', 'Parent', 'ValueType'],
     'ChartOfCalculationTypes': ['PredefinedDataName', 'Predefined', 'Ref', 'DeletionMark', 'Description', 'Code', 'ActionPeriodIsBasic'],
@@ -1054,7 +1114,108 @@ standard_attributes_by_type = {
     'DocumentJournal': ['Type', 'Ref', 'Date', 'Posted', 'DeletionMark', 'Number'],
 }
 
-def emit_standard_attribute(indent, attr_name):
+# --- Команды объекта ---
+# Группа обязательна: без нее платформа не знает, где показывать команду. Секционные группы
+# командного интерфейса параметра команды не принимают.
+COMMAND_SECTION_GROUPS = (
+    'NavigationPanelImportant', 'NavigationPanelOrdinary', 'NavigationPanelSeeAlso',
+    'ActionsPanelImportant', 'ActionsPanelOrdinary', 'ActionsPanelSeeAlso', 'ActionsPanelCreate',
+    'CommandBar', 'CommandStatusBar',
+)
+
+COMMAND_GROUP_SYNONYMS = {
+    'панельнавигации.важное': 'NavigationPanelImportant',
+    'панельнавигации.обычное': 'NavigationPanelOrdinary',
+    'панельнавигации.смтакже': 'NavigationPanelSeeAlso',
+    'панельдействий.важное': 'ActionsPanelImportant',
+    'панельдействий.обычное': 'ActionsPanelOrdinary',
+    'панельдействий.смтакже': 'ActionsPanelSeeAlso',
+    'панельдействий.создать': 'ActionsPanelCreate',
+    'панельдействий.сервис': 'ActionsPanelTools',
+    'команднаяпанельформы.важное': 'FormCommandBarImportant',
+    'команднаяпанельформы.обычное': 'FormCommandBarOrdinary',
+    'команднаяпанельформы.смтакже': 'FormCommandBarSeeAlso',
+    'команднаяпанельформы.создать': 'FormCommandBarCreate',
+    'панельнавигацииформы.важное': 'FormNavigationPanelImportant',
+    'панельнавигацииформы.обычное': 'FormNavigationPanelOrdinary',
+    'панельнавигацииформы.перейти': 'FormNavigationPanelGoTo',
+    'панельнавигацииформы.смтакже': 'FormNavigationPanelSeeAlso',
+}
+
+
+def resolve_command_group(group):
+    """Группа задается предопределенным именем или ссылкой на собственную группу команд."""
+    if not group:
+        return ''
+    key = re.sub(r'\s', '', group).lower()
+    if key in COMMAND_GROUP_SYNONYMS:
+        return COMMAND_GROUP_SYNONYMS[key]
+    m = re.match(r'^(?:ГруппаКоманд|CommandGroup)\.(.+)$', group)
+    if m:
+        return 'CommandGroup.' + m.group(1)
+    return group
+
+
+def emit_object_command(indent, cmd_name, cmd_def):
+    group = resolve_command_group(str(cmd_def.get('group', '')))
+    if not group:
+        print("Ошибка: команде '" + cmd_name + "' не задана группа. "
+              "Укажите group, например FormCommandBarImportant", file=sys.stderr)
+        sys.exit(1)
+    param_type = str(cmd_def.get('commandParameterType', ''))
+    if param_type and group in COMMAND_SECTION_GROUPS:
+        print("Ошибка: у команды '" + cmd_name + "' параметр команды недоступен для группы "
+              + group + " - секционные группы командного интерфейса принимают команды без параметра",
+              file=sys.stderr)
+        sys.exit(1)
+
+    X(indent + '<Command uuid="' + new_uuid() + '">')
+    i = indent + '\t\t'
+    X(indent + '\t<Properties>')
+    X(i + '<Name>' + esc_xml(cmd_name) + '</Name>')
+    emit_mltext(i, 'Synonym', cmd_def.get('synonym') or split_camel_case(cmd_name))
+    comment = str(cmd_def.get('comment', ''))
+    X(i + '<Comment>' + esc_xml(comment) + '</Comment>' if comment else i + '<Comment/>')
+    X(i + '<Group>' + group + '</Group>')
+    if param_type:
+        X(i + '<CommandParameterType>')
+        emit_type_content(i + '\t', param_type, cfg_prefix=True)
+        X(i + '</CommandParameterType>')
+    else:
+        X(i + '<CommandParameterType/>')
+    X(i + '<ParameterUseMode>' + str(cmd_def.get('parameterUseMode', 'Single')) + '</ParameterUseMode>')
+    X(i + '<ModifiesData>' + ('true' if cmd_def.get('modifiesData') is True else 'false') + '</ModifiesData>')
+    X(i + '<Representation>' + str(cmd_def.get('representation', 'Auto')) + '</Representation>')
+    if cmd_def.get('tooltip'):
+        emit_mltext(i, 'ToolTip', cmd_def['tooltip'])
+    else:
+        X(i + '<ToolTip/>')
+
+    # Картинка задается именем или объектом с прозрачным пикселем.
+    picture = cmd_def.get('picture')
+    if picture:
+        pic_ref = picture if isinstance(picture, str) else str(picture.get('src', ''))
+        X(i + '<Picture>')
+        X(i + '\t<xr:Ref>' + esc_xml(pic_ref) + '</xr:Ref>')
+        load_transparent = 'false' if cmd_def.get('loadTransparent') is False else 'true'
+        X(i + '\t<xr:LoadTransparent>' + load_transparent + '</xr:LoadTransparent>')
+        if not isinstance(picture, str) and picture.get('transparentPixel'):
+            pixel = picture['transparentPixel']
+            X(i + '\t<xr:TransparentPixel x="' + str(pixel.get('x', 0))
+              + '" y="' + str(pixel.get('y', 0)) + '"/>')
+        X(i + '</Picture>')
+    else:
+        X(i + '<Picture/>')
+    shortcut = str(cmd_def.get('shortcut', ''))
+    X(i + '<Shortcut>' + esc_xml(shortcut) + '</Shortcut>' if shortcut else i + '<Shortcut/>')
+    X(i + '<OnMainServerUnavalableBehavior>'
+      + str(cmd_def.get('onMainServerUnavalableBehavior', 'Auto'))
+      + '</OnMainServerUnavalableBehavior>')
+    X(indent + '\t</Properties>')
+    X(indent + '</Command>')
+
+
+def emit_standard_attribute(indent, attr_name, required=False):
     # Настройки приходят ключом standardAttributes: заданное свойство заменяет умолчание,
     # остальные печатаются как есть.
     cfg = (defn.get('standardAttributes') or {}).get(attr_name) or {}
@@ -1063,7 +1224,7 @@ def emit_standard_attribute(indent, attr_name):
     X(f'{indent}\t<xr:LinkByType/>')
     # Владелец подчиненного справочника обязателен к заполнению - платформа выставляет это
     # сама. Владелец и родитель заполняются из значения заполнения.
-    default_checking = 'ShowError' if attr_name == 'Owner' else 'DontCheck'
+    default_checking = 'ShowError' if attr_name == 'Owner' or required else 'DontCheck'
     fill_checking = (normalize_enum_value('FillChecking', str(cfg['fillChecking']))
                      if cfg.get('fillChecking') else default_checking)
     X(f'{indent}\t<xr:FillChecking>{fill_checking}</xr:FillChecking>')
@@ -1134,40 +1295,43 @@ def emit_tabular_standard_attributes(indent):
 # 8. Attribute emitter
 # ---------------------------------------------------------------------------
 
-RESERVED_ATTR_NAMES = {
-    'Ref', 'DeletionMark', 'Code', 'Description', 'Date', 'Number', 'Posted',
-    'Parent', 'Owner', 'IsFolder', 'Predefined', 'PredefinedDataName',
-    'Recorder', 'Period', 'LineNumber', 'Active', 'Order', 'Type', 'OffBalance',
-    'Started', 'Completed', 'HeadTask', 'Executed', 'RoutePoint', 'BusinessProcess',
-    'ThisNode', 'SentNo', 'ReceivedNo', 'CalculationType', 'RegistrationPeriod',
-    'ReversingEntry', 'Account', 'ValueType', 'ActionPeriodIsBasic',
+# Имена стандартных реквизитов по типу объекта, обе формы записи. Набор совпадает с составом,
+# который выпускает meta-compile: имени вне этого набора платформа не запрещает, и общего
+# для всех типов списка нет - у обработки нет Ссылки, у документа нет Предопределенного.
+RESERVED_ATTRIBUTES_BY_TYPE = {
+    "Catalog": ["PredefinedDataName", "ИмяПредопределенныхДанных", "Predefined", "Предопределенный", "Ref", "Ссылка", "DeletionMark", "ПометкаУдаления", "IsFolder", "ЭтоГруппа", "Owner", "Владелец", "Parent", "Родитель", "Description", "Наименование", "Code", "Код"],
+    "Document": ["Ref", "Ссылка", "DeletionMark", "ПометкаУдаления", "Date", "Дата", "Number", "Номер", "Posted", "Проведен"],
+    "Enum": ["Ref", "Ссылка", "Order", "Порядок"],
+    "InformationRegister": ["Period", "Период", "Recorder", "Регистратор", "LineNumber", "НомерСтроки", "Active", "Активность"],
+    "AccumulationRegister": ["Period", "Период", "Recorder", "Регистратор", "LineNumber", "НомерСтроки", "Active", "Активность"],
+    "AccountingRegister": ["Period", "Период", "Recorder", "Регистратор", "LineNumber", "НомерСтроки", "Active", "Активность", "Account", "Счет"],
+    "CalculationRegister": ["Recorder", "Регистратор", "LineNumber", "НомерСтроки", "Active", "Активность", "RegistrationPeriod", "ПериодРегистрации", "CalculationType", "ВидРасчета", "ReversingEntry", "СторноЗапись"],
+    "ChartOfAccounts": ["PredefinedDataName", "ИмяПредопределенныхДанных", "Predefined", "Предопределенный", "Ref", "Ссылка", "DeletionMark", "ПометкаУдаления", "Description", "Наименование", "Code", "Код", "Parent", "Родитель", "Order", "Порядок", "Type", "Тип", "OffBalance", "Забалансовый"],
+    "ChartOfCharacteristicTypes": ["PredefinedDataName", "ИмяПредопределенныхДанных", "Predefined", "Предопределенный", "Ref", "Ссылка", "DeletionMark", "ПометкаУдаления", "Description", "Наименование", "Code", "Код", "Parent", "Родитель", "IsFolder", "ЭтоГруппа", "ValueType", "ТипЗначения"],
+    "ChartOfCalculationTypes": ["PredefinedDataName", "ИмяПредопределенныхДанных", "Predefined", "Предопределенный", "Ref", "Ссылка", "DeletionMark", "ПометкаУдаления", "Description", "Наименование", "Code", "Код", "ActionPeriodIsBasic", "БазовыйПериодЯвляетсяОсновным"],
+    "BusinessProcess": ["Ref", "Ссылка", "DeletionMark", "ПометкаУдаления", "Date", "Дата", "Number", "Номер", "Started", "Стартован", "Completed", "Завершен", "HeadTask", "ВедущаяЗадача"],
+    "Task": ["Ref", "Ссылка", "DeletionMark", "ПометкаУдаления", "Date", "Дата", "Number", "Номер", "Description", "Наименование", "Executed", "Выполнена", "RoutePoint", "ТочкаМаршрута", "BusinessProcess", "БизнесПроцесс"],
+    "ExchangePlan": ["Ref", "Ссылка", "DeletionMark", "ПометкаУдаления", "Code", "Код", "Description", "Наименование", "ThisNode", "ЭтотУзел", "SentNo", "НомерОтправленного", "ReceivedNo", "НомерПринятого"],
+    "DocumentJournal": ["Ref", "Ссылка", "Type", "Тип", "Date", "Дата", "Number", "Номер", "Posted", "Проведен", "DeletionMark", "ПометкаУдаления"],
+    "TabularSection": ["LineNumber", "НомерСтроки"],
 }
-RESERVED_ATTR_NAMES_RU = {
-    '\u0421\u0441\u044b\u043b\u043a\u0430', '\u041f\u043e\u043c\u0435\u0442\u043a\u0430\u0423\u0434\u0430\u043b\u0435\u043d\u0438\u044f',
-    '\u041a\u043e\u0434', '\u041d\u0430\u0438\u043c\u0435\u043d\u043e\u0432\u0430\u043d\u0438\u0435',
-    '\u0414\u0430\u0442\u0430', '\u041d\u043e\u043c\u0435\u0440', '\u041f\u0440\u043e\u0432\u0435\u0434\u0435\u043d',
-    '\u0420\u043e\u0434\u0438\u0442\u0435\u043b\u044c', '\u0412\u043b\u0430\u0434\u0435\u043b\u0435\u0446',
-    '\u042d\u0442\u043e\u0413\u0440\u0443\u043f\u043f\u0430', '\u041f\u0440\u0435\u0434\u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u043d\u044b\u0439',
-    '\u0418\u043c\u044f\u041f\u0440\u0435\u0434\u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u043d\u044b\u0445\u0414\u0430\u043d\u043d\u044b\u0445',
-    '\u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0442\u043e\u0440', '\u041f\u0435\u0440\u0438\u043e\u0434',
-    '\u041d\u043e\u043c\u0435\u0440\u0421\u0442\u0440\u043e\u043a\u0438', '\u0410\u043a\u0442\u0438\u0432\u043d\u043e\u0441\u0442\u044c',
-    '\u041f\u043e\u0440\u044f\u0434\u043e\u043a', '\u0422\u0438\u043f', '\u0417\u0430\u0431\u0430\u043b\u0430\u043d\u0441\u043e\u0432\u044b\u0439',
-    '\u0421\u0442\u0430\u0440\u0442\u043e\u0432\u0430\u043d', '\u0417\u0430\u0432\u0435\u0440\u0448\u0435\u043d',
-    '\u0412\u0435\u0434\u0443\u0449\u0430\u044f\u0417\u0430\u0434\u0430\u0447\u0430',
-    '\u0412\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0430', '\u0422\u043e\u0447\u043a\u0430\u041c\u0430\u0440\u0448\u0440\u0443\u0442\u0430',
-    '\u0411\u0438\u0437\u043d\u0435\u0441\u041f\u0440\u043e\u0446\u0435\u0441\u0441',
-    '\u042d\u0442\u043e\u0442\u0423\u0437\u0435\u043b', '\u041d\u043e\u043c\u0435\u0440\u041e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043d\u043e\u0433\u043e',
-    '\u041d\u043e\u043c\u0435\u0440\u041f\u0440\u0438\u043d\u044f\u0442\u043e\u0433\u043e',
-    '\u0412\u0438\u0434\u0420\u0430\u0441\u0447\u0435\u0442\u0430', '\u041f\u0435\u0440\u0438\u043e\u0434\u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u0438',
-    '\u0421\u0442\u043e\u0440\u043d\u043e\u0417\u0430\u043f\u0438\u0441\u044c',
-    '\u0421\u0447\u0435\u0442', '\u0422\u0438\u043f\u0417\u043d\u0430\u0447\u0435\u043d\u0438\u044f',
-    '\u041f\u0435\u0440\u0438\u043e\u0434\u0414\u0435\u0439\u0441\u0442\u0432\u0438\u044f\u0411\u0430\u0437\u043e\u0432\u044b\u0439',
-}
+
+
+def assert_attribute_name_allowed(name, owner_type):
+    if not name:
+        return
+    normalized = name.replace('\u0451', '\u0435').replace('\u0401', '\u0415')
+    for standard in RESERVED_ATTRIBUTES_BY_TYPE.get(owner_type, []):
+        if standard.lower() == normalized.lower():
+            print(f"Имя '{name}' зарезервировано стандартным реквизитом платформы "
+                  f"у типа '{owner_type}'", file=sys.stderr)
+            sys.exit(1)
+
 
 def emit_attribute(indent, parsed, context):
     attr_name = parsed['name']
-    if context not in ('tabular', 'processor-tabular') and (attr_name in RESERVED_ATTR_NAMES or attr_name in RESERVED_ATTR_NAMES_RU):
-        print(f"WARNING: Attribute '{attr_name}' conflicts with a standard attribute name. This may cause errors when loading into 1C.", file=sys.stderr)
+    owner = 'TabularSection' if context in ('tabular', 'processor-tabular') else obj_type
+    assert_attribute_name_allowed(attr_name, owner)
     uid = new_uuid()
     X(f'{indent}<Attribute uuid="{uid}">')
     X(f'{indent}\t<Properties>')
@@ -1192,11 +1356,11 @@ def emit_attribute(indent, parsed, context):
     X(f'{indent}\t\t<ExtendedEdit>false</ExtendedEdit>')
     X(f'{indent}\t\t<MinValue xsi:nil="true"/>')
     X(f'{indent}\t\t<MaxValue xsi:nil="true"/>')
-    # FillFromFillingValue / FillValue — not for tabular/processor/chart/register-other
-    # (Chart*, AccumulationRegister/AccountingRegister/CalculationRegister don't support these)
-    if context not in ('tabular', 'processor', 'chart', 'register-other'):
+    # Заполнение по значению не пишется у табличной части, обработки и регистров кроме
+    # сведений. Планы счетов и видов расчета его пишут - сверено с выгрузкой.
+    if context not in ('tabular', 'processor', 'register-other'):
         X(f'{indent}\t\t<FillFromFillingValue>false</FillFromFillingValue>')
-    if context not in ('tabular', 'processor', 'chart', 'register-other'):
+    if context not in ('tabular', 'processor', 'register-other'):
         emit_fill_value(f'{indent}\t\t', type_str)
     fill_checking = 'DontCheck'
     if 'req' in parsed.get('flags', []):
@@ -1224,8 +1388,8 @@ def emit_attribute(indent, parsed, context):
             indexing = parsed['indexing']
         X(f'{indent}\t\t<Indexing>{indexing}</Indexing>')
         X(f'{indent}\t\t<FullTextSearch>Use</FullTextSearch>')
-        # DataHistory — not for Chart* types and non-InformationRegister register family
-        if context not in ('chart', 'register-other'):
+        # История данных не пишется у регистров кроме сведений.
+        if context != 'register-other':
             X(f'{indent}\t\t<DataHistory>Use</DataHistory>')
     X(f'{indent}\t</Properties>')
     X(f'{indent}</Attribute>')
@@ -1280,6 +1444,12 @@ def emit_tabular_section(indent, ts_name, columns, object_type, object_name, opt
 # 10. EnumValue emitter
 # ---------------------------------------------------------------------------
 
+def format_version_rank(version):
+    """Версии сравниваются по составным частям: 2.9 старее, чем 2.21, хотя как число больше."""
+    m = re.match(r"^(\d+)\.(\d+)$", str(version or ""))
+    return int(m.group(1)) * 100 + int(m.group(2)) if m else 0
+
+
 def emit_enum_value(indent, parsed):
     uid = new_uuid()
     X(f'{indent}<EnumValue uuid="{uid}">')
@@ -1289,7 +1459,7 @@ def emit_enum_value(indent, parsed):
     X(f'{indent}\t\t<Comment/>')
     # Цвет значения перечисления появился в формате 2.21 (8.5); значение auto означает,
     # что цвет выбирает платформа.
-    if float(format_version) >= 2.21:
+    if format_version_rank(format_version) >= 221:
         X(f'{indent}\t\t<Color>auto</Color>')
     X(f'{indent}\t</Properties>')
     X(f'{indent}</EnumValue>')
@@ -1435,7 +1605,7 @@ def emit_catalog_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     hierarchical = 'true' if defn.get('hierarchical') is True else 'false'
     hierarchy_type = get_enum_prop('HierarchyType', 'hierarchyType', 'HierarchyFoldersAndItems')
     X(f'{i}<Hierarchical>{hierarchical}</Hierarchical>')
@@ -1483,10 +1653,18 @@ def emit_catalog_properties(indent):
     choice_mode = get_enum_prop('ChoiceMode', 'choiceMode', 'BothWays')
     X(f'{i}<QuickChoice>{quick_choice}</QuickChoice>')
     X(f'{i}<ChoiceMode>{choice_mode}</ChoiceMode>')
-    X(f'{i}<InputByString>')
-    X(f'{i}\t<xr:Field>Catalog.{obj_name}.StandardAttribute.Description</xr:Field>')
-    X(f'{i}\t<xr:Field>Catalog.{obj_name}.StandardAttribute.Code</xr:Field>')
-    X(f'{i}</InputByString>')
+    input_fields = []
+    if description_length != '0':
+        input_fields.append(f'{i}\t<xr:Field>Catalog.{obj_name}.StandardAttribute.Description</xr:Field>')
+    if code_length != '0':
+        input_fields.append(f'{i}\t<xr:Field>Catalog.{obj_name}.StandardAttribute.Code</xr:Field>')
+    if input_fields:
+        X(f'{i}<InputByString>')
+        for field_line in input_fields:
+            X(field_line)
+        X(f'{i}</InputByString>')
+    else:
+        X(f'{i}<InputByString/>')
     X(f'{i}<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>')
     X(f'{i}<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>')
     X(f'{i}<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>')
@@ -1523,7 +1701,7 @@ def emit_document_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     X(f'{i}<UseStandardCommands>true</UseStandardCommands>')
     X(f'{i}<Numerator/>')
     number_type = get_enum_prop('NumberType', 'numberType', 'String')
@@ -1611,7 +1789,7 @@ def emit_enum_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     X(f'{i}<UseStandardCommands>false</UseStandardCommands>')
     emit_standard_attributes(i, 'Enum')
     X(f'{i}<Characteristics/>')
@@ -1630,7 +1808,7 @@ def emit_constant_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     # Type
     # build_type_str рассчитан на реквизиты, где `type` и есть тип данных. У определения ОБЪЕКТА
     # `type` означает тип метаданных, поэтому общий откат тут не годится: без valueType в тип
@@ -1669,7 +1847,7 @@ def emit_information_register_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     X(f'{i}<UseStandardCommands>true</UseStandardCommands>')
     X(f'{i}<EditType>InDialog</EditType>')
     X(f'{i}<DefaultRecordForm/>')
@@ -1707,7 +1885,7 @@ def emit_accumulation_register_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     X(f'{i}<UseStandardCommands>true</UseStandardCommands>')
     X(f'{i}<DefaultListForm/>')
     X(f'{i}<AuxiliaryListForm/>')
@@ -1940,7 +2118,7 @@ def emit_command_group_properties(indent):
     X(f'{i}<Representation>{repr_}</Representation>')
     X(f'{i}<ToolTip/>')
     emit_picture_ref(i, defn.get('picture'))
-    category = str(defn['category']) if defn.get('category') else 'FormCommandBar'
+    category = str(defn['category']) if defn.get('category') else 'NavigationPanel'
     X(f'{i}<Category>{category}</Category>')
 
 
@@ -1994,7 +2172,7 @@ def emit_defined_type_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     # Accept both valueType and valueTypes
     value_types = as_array(defn.get('valueTypes'))
     if not value_types and defn.get('valueType'):
@@ -2024,7 +2202,7 @@ def emit_common_module_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     context = str(defn['context']) if defn.get('context') else ''
     global_val = 'true' if defn.get('global') is True else 'false'
     server = 'false'
@@ -2068,7 +2246,7 @@ def emit_scheduled_job_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     method_name = str(defn['methodName']) if defn.get('methodName') else ''
     # Ensure CommonModule. prefix
     if method_name and not method_name.startswith('CommonModule.'):
@@ -2091,7 +2269,7 @@ def emit_event_subscription_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     sources = as_array(defn.get('source'))
     if sources:
         X(f'{i}<Source>')
@@ -2115,7 +2293,7 @@ def emit_report_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     X(f'{i}<UseStandardCommands>true</UseStandardCommands>')
     default_form = str(defn['defaultForm']) if defn.get('defaultForm') else ''
     if default_form:
@@ -2157,7 +2335,7 @@ def emit_data_processor_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     # Стандартные команды обработки платформа включает по умолчанию.
     X(f'{i}<UseStandardCommands>true</UseStandardCommands>')
     default_form = str(defn['defaultForm']) if defn.get('defaultForm') else ''
@@ -2180,7 +2358,7 @@ def emit_exchange_plan_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     X(f'{i}<UseStandardCommands>true</UseStandardCommands>')
     code_length = str(defn['codeLength']) if defn.get('codeLength') is not None else '9'
     description_length = str(defn['descriptionLength']) if defn.get('descriptionLength') is not None else '100'
@@ -2198,10 +2376,18 @@ def emit_exchange_plan_properties(indent):
     X(f'{i}<BasedOn/>')
     X(f'{i}<QuickChoice>true</QuickChoice>')
     X(f'{i}<ChoiceMode>BothWays</ChoiceMode>')
-    X(f'{i}<InputByString>')
-    X(f'{i}\t<xr:Field>ExchangePlan.{obj_name}.StandardAttribute.Description</xr:Field>')
-    X(f'{i}\t<xr:Field>ExchangePlan.{obj_name}.StandardAttribute.Code</xr:Field>')
-    X(f'{i}</InputByString>')
+    input_fields = []
+    if description_length != '0':
+        input_fields.append(f'{i}\t<xr:Field>ExchangePlan.{obj_name}.StandardAttribute.Description</xr:Field>')
+    if code_length != '0':
+        input_fields.append(f'{i}\t<xr:Field>ExchangePlan.{obj_name}.StandardAttribute.Code</xr:Field>')
+    if input_fields:
+        X(f'{i}<InputByString>')
+        for field_line in input_fields:
+            X(field_line)
+        X(f'{i}</InputByString>')
+    else:
+        X(f'{i}<InputByString/>')
     X(f'{i}<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>')
     X(f'{i}<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>')
     X(f'{i}<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>')
@@ -2232,25 +2418,19 @@ def emit_chart_of_characteristic_types_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     X(f'{i}<UseStandardCommands>true</UseStandardCommands>')
-    code_length = str(defn['codeLength']) if defn.get('codeLength') is not None else '9'
-    description_length = str(defn['descriptionLength']) if defn.get('descriptionLength') is not None else '25'
-    code_allowed_length = get_enum_prop('CodeAllowedLength', 'codeAllowedLength', 'Variable')
-    autonumbering = 'false' if defn.get('autonumbering') is False else 'true'
-    check_unique = 'true' if defn.get('checkUnique') is True else 'false'
-    X(f'{i}<CodeLength>{code_length}</CodeLength>')
-    X(f'{i}<CodeAllowedLength>{code_allowed_length}</CodeAllowedLength>')
-    X(f'{i}<DescriptionLength>{description_length}</DescriptionLength>')
-    X(f'{i}<CheckUnique>{check_unique}</CheckUnique>')
-    X(f'{i}<Autonumbering>{autonumbering}</Autonumbering>')
-    X(f'{i}<DefaultPresentation>AsDescription</DefaultPresentation>')
+    X(f'{i}<IncludeHelpInContents>false</IncludeHelpInContents>')
+
     char_ext_values = str(defn['characteristicExtValues']) if defn.get('characteristicExtValues') else ''
     if char_ext_values:
         X(f'{i}<CharacteristicExtValues>{char_ext_values}</CharacteristicExtValues>')
     else:
         X(f'{i}<CharacteristicExtValues/>')
     value_types = as_array(defn.get('valueTypes'))
+    if not value_types and defn.get('valueType'):
+        vt_raw = defn['valueType']
+        value_types = list(vt_raw) if isinstance(vt_raw, list) else [vt_raw]
     if value_types:
         X(f'{i}<Type>')
         for vt in value_types:
@@ -2278,19 +2458,44 @@ def emit_chart_of_characteristic_types_properties(indent):
     hierarchical = 'true' if defn.get('hierarchical') is True else 'false'
     X(f'{i}<Hierarchical>{hierarchical}</Hierarchical>')
     X(f'{i}<FoldersOnTop>true</FoldersOnTop>')
+    code_length = str(defn['codeLength']) if defn.get('codeLength') is not None else '9'
+    description_length = str(defn['descriptionLength']) if defn.get('descriptionLength') is not None else '100'
+    code_allowed_length = get_enum_prop('CodeAllowedLength', 'codeAllowedLength', 'Variable')
+    autonumbering = 'false' if defn.get('autonumbering') is False else 'true'
+    check_unique = 'false' if defn.get('checkUnique') is False else 'true'
+    X(f'{i}<CodeLength>{code_length}</CodeLength>')
+    X(f'{i}<CodeAllowedLength>{code_allowed_length}</CodeAllowedLength>')
+    X(f'{i}<DescriptionLength>{description_length}</DescriptionLength>')
+    code_series = defn.get('codeSeries') or 'WholeCharacteristicKind'
+    X(f'{i}<CodeSeries>{code_series}</CodeSeries>')
+    X(f'{i}<CheckUnique>{check_unique}</CheckUnique>')
+    X(f'{i}<Autonumbering>{autonumbering}</Autonumbering>')
+    X(f'{i}<DefaultPresentation>AsDescription</DefaultPresentation>')
     emit_standard_attributes(i, 'ChartOfCharacteristicTypes')
     X(f'{i}<Characteristics/>')
     X(f'{i}<PredefinedDataUpdate>Auto</PredefinedDataUpdate>')
     X(f'{i}<EditType>InDialog</EditType>')
-    X(f'{i}<QuickChoice>true</QuickChoice>')
+    quick_choice = 'true' if defn.get('quickChoice') is True else 'false'
+    X(f'{i}<QuickChoice>{quick_choice}</QuickChoice>')
     X(f'{i}<ChoiceMode>BothWays</ChoiceMode>')
-    X(f'{i}<InputByString>')
-    X(f'{i}\t<xr:Field>ChartOfCharacteristicTypes.{obj_name}.StandardAttribute.Description</xr:Field>')
-    X(f'{i}\t<xr:Field>ChartOfCharacteristicTypes.{obj_name}.StandardAttribute.Code</xr:Field>')
-    X(f'{i}</InputByString>')
+    input_fields = []
+    if description_length != '0':
+        input_fields.append(f'{i}\t<xr:Field>ChartOfCharacteristicTypes.{obj_name}.StandardAttribute.Description</xr:Field>')
+    if code_length != '0':
+        input_fields.append(f'{i}\t<xr:Field>ChartOfCharacteristicTypes.{obj_name}.StandardAttribute.Code</xr:Field>')
+    if input_fields:
+        X(f'{i}<InputByString>')
+        for field_line in input_fields:
+            X(field_line)
+        X(f'{i}</InputByString>')
+    else:
+        X(f'{i}<InputByString/>')
+    create_on_input = get_enum_prop('CreateOnInput', 'createOnInput', 'DontUse')
+    X(f'{i}<CreateOnInput>{create_on_input}</CreateOnInput>')
     X(f'{i}<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>')
-    X(f'{i}<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>')
     X(f'{i}<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>')
+    X(f'{i}<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>')
+    X(f'{i}<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>')
     X(f'{i}<DefaultObjectForm/>')
     X(f'{i}<DefaultFolderForm/>')
     X(f'{i}<DefaultListForm/>')
@@ -2301,7 +2506,6 @@ def emit_chart_of_characteristic_types_properties(indent):
     X(f'{i}<AuxiliaryListForm/>')
     X(f'{i}<AuxiliaryChoiceForm/>')
     X(f'{i}<AuxiliaryFolderChoiceForm/>')
-    X(f'{i}<IncludeHelpInContents>false</IncludeHelpInContents>')
     X(f'{i}<BasedOn/>')
     X(f'{i}<DataLockFields/>')
     data_lock_control_mode = get_enum_prop('DataLockControlMode', 'dataLockControlMode', 'Managed')
@@ -2313,8 +2517,6 @@ def emit_chart_of_characteristic_types_properties(indent):
     X(f'{i}<ListPresentation/>')
     X(f'{i}<ExtendedListPresentation/>')
     X(f'{i}<Explanation/>')
-    X(f'{i}<CreateOnInput>Use</CreateOnInput>')
-    X(f'{i}<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>')
     X(f'{i}<DataHistory>DontUse</DataHistory>')
     X(f'{i}<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>')
     X(f'{i}<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>')
@@ -2323,7 +2525,7 @@ def emit_document_journal_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     default_form = str(defn['defaultForm']) if defn.get('defaultForm') else ''
     if default_form:
         X(f'{i}<DefaultForm>{default_form}</DefaultForm>')
@@ -2353,6 +2555,7 @@ def emit_document_journal_properties(indent):
         X(f'{i}</RegisteredDocuments>')
     else:
         X(f'{i}<RegisteredDocuments/>')
+    X(f'{i}<IncludeHelpInContents>false</IncludeHelpInContents>')
     emit_standard_attributes(i, 'DocumentJournal')
     X(f'{i}<ListPresentation/>')
     X(f'{i}<ExtendedListPresentation/>')
@@ -2362,8 +2565,10 @@ def emit_chart_of_accounts_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     X(f'{i}<UseStandardCommands>true</UseStandardCommands>')
+    X(f'{i}<IncludeHelpInContents>false</IncludeHelpInContents>')
+    X(f'{i}<BasedOn/>')
     ext_dim_types = str(defn['extDimensionTypes']) if defn.get('extDimensionTypes') else ''
     if ext_dim_types:
         X(f'{i}<ExtDimensionTypes>{ext_dim_types}</ExtDimensionTypes>')
@@ -2389,64 +2594,87 @@ def emit_chart_of_accounts_properties(indent):
     description_length = str(defn['descriptionLength']) if defn.get('descriptionLength') is not None else '120'
     code_series = str(defn['codeSeries']) if defn.get('codeSeries') else 'WholeChartOfAccounts'
     auto_order = 'false' if defn.get('autoOrderByCode') is False else 'true'
-    order_length = str(defn['orderLength']) if defn.get('orderLength') is not None else '5'
+    order_length = str(defn['orderLength']) if defn.get('orderLength') is not None else '9'
     X(f'{i}<CodeLength>{code_length}</CodeLength>')
     X(f'{i}<DescriptionLength>{description_length}</DescriptionLength>')
     X(f'{i}<CodeSeries>{code_series}</CodeSeries>')
-    X(f'{i}<CheckUnique>false</CheckUnique>')
-    X(f'{i}<DefaultPresentation>AsDescription</DefaultPresentation>')
-    X(f'{i}<AutoOrderByCode>{auto_order}</AutoOrderByCode>')
-    X(f'{i}<OrderLength>{order_length}</OrderLength>')
-    X(f'{i}<EditType>InDialog</EditType>')
+    check_unique = 'false' if defn.get('checkUnique') is False else 'true'
+    X(f'{i}<CheckUnique>{check_unique}</CheckUnique>')
+    default_presentation = get_enum_prop('DefaultPresentation', 'defaultPresentation', 'AsCode')
+    X(f'{i}<DefaultPresentation>{default_presentation}</DefaultPresentation>')
     emit_standard_attributes(i, 'ChartOfAccounts')
+    X(f'{i}<Characteristics/>')
     X(f'{i}<StandardTabularSections>')
     X(f'{i}\t<xr:StandardTabularSection name="ExtDimensionTypes">')
+    # Стандартная табличная часть несет свой заголовок и проверку заполнения - платформа
+    # пишет их перед составом реквизитов.
+    X(f'{i}\t\t<xr:Synonym>')
+    X(f'{i}\t\t\t<v8:item>')
+    X(f'{i}\t\t\t\t<v8:lang/>')
+    X(f'{i}\t\t\t\t<v8:content>Виды субконто</v8:content>')
+    X(f'{i}\t\t\t</v8:item>')
+    X(f'{i}\t\t</xr:Synonym>')
+    X(f'{i}\t\t<xr:Comment/>')
+    X(f'{i}\t\t<xr:ToolTip/>')
+    X(f'{i}\t\t<xr:FillChecking>DontCheck</xr:FillChecking>')
     X(f'{i}\t\t<xr:StandardAttributes>')
     for st_attr in ['TurnoversOnly', 'Predefined', 'ExtDimensionType', 'LineNumber']:
-        emit_standard_attribute(f'{i}\t\t\t', st_attr)
+        # Вид субконто заполняется обязательно: без него строка табличной части бессмысленна.
+        required = st_attr == 'ExtDimensionType'
+        emit_standard_attribute(f'{i}\t\t\t', st_attr, required)
     X(f'{i}\t\t</xr:StandardAttributes>')
     X(f'{i}\t</xr:StandardTabularSection>')
     X(f'{i}</StandardTabularSections>')
-    X(f'{i}<Characteristics/>')
     X(f'{i}<PredefinedDataUpdate>Auto</PredefinedDataUpdate>')
-    X(f'{i}<QuickChoice>true</QuickChoice>')
+    X(f'{i}<EditType>InDialog</EditType>')
+    quick_choice = 'true' if defn.get('quickChoice') is True else 'false'
+    X(f'{i}<QuickChoice>{quick_choice}</QuickChoice>')
     X(f'{i}<ChoiceMode>BothWays</ChoiceMode>')
-    X(f'{i}<InputByString>')
-    X(f'{i}\t<xr:Field>ChartOfAccounts.{obj_name}.StandardAttribute.Description</xr:Field>')
-    X(f'{i}\t<xr:Field>ChartOfAccounts.{obj_name}.StandardAttribute.Code</xr:Field>')
-    X(f'{i}</InputByString>')
+    input_fields = []
+    if description_length != '0':
+        input_fields.append(f'{i}\t<xr:Field>ChartOfAccounts.{obj_name}.StandardAttribute.Description</xr:Field>')
+    if code_length != '0':
+        input_fields.append(f'{i}\t<xr:Field>ChartOfAccounts.{obj_name}.StandardAttribute.Code</xr:Field>')
+    if input_fields:
+        X(f'{i}<InputByString>')
+        for field_line in input_fields:
+            X(field_line)
+        X(f'{i}</InputByString>')
+    else:
+        X(f'{i}<InputByString/>')
     X(f'{i}<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>')
     X(f'{i}<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>')
     X(f'{i}<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>')
+    create_on_input = get_enum_prop('CreateOnInput', 'createOnInput', 'DontUse')
+    X(f'{i}<CreateOnInput>{create_on_input}</CreateOnInput>')
+    X(f'{i}<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>')
     X(f'{i}<DefaultObjectForm/>')
     X(f'{i}<DefaultListForm/>')
     X(f'{i}<DefaultChoiceForm/>')
     X(f'{i}<AuxiliaryObjectForm/>')
     X(f'{i}<AuxiliaryListForm/>')
     X(f'{i}<AuxiliaryChoiceForm/>')
-    X(f'{i}<IncludeHelpInContents>false</IncludeHelpInContents>')
-    X(f'{i}<BasedOn/>')
+    X(f'{i}<AutoOrderByCode>{auto_order}</AutoOrderByCode>')
+    X(f'{i}<OrderLength>{order_length}</OrderLength>')
     X(f'{i}<DataLockFields/>')
     data_lock_control_mode = get_enum_prop('DataLockControlMode', 'dataLockControlMode', 'Managed')
     X(f'{i}<DataLockControlMode>{data_lock_control_mode}</DataLockControlMode>')
     full_text_search = get_enum_prop('FullTextSearch', 'fullTextSearch', 'Use')
     X(f'{i}<FullTextSearch>{full_text_search}</FullTextSearch>')
+    X(f'{i}<DataHistory>DontUse</DataHistory>')
+    X(f'{i}<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>')
+    X(f'{i}<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>')
     X(f'{i}<ObjectPresentation/>')
     X(f'{i}<ExtendedObjectPresentation/>')
     X(f'{i}<ListPresentation/>')
     X(f'{i}<ExtendedListPresentation/>')
     X(f'{i}<Explanation/>')
-    X(f'{i}<CreateOnInput>Use</CreateOnInput>')
-    X(f'{i}<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>')
-    X(f'{i}<DataHistory>DontUse</DataHistory>')
-    X(f'{i}<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>')
-    X(f'{i}<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>')
 
 def emit_accounting_register_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     X(f'{i}<UseStandardCommands>true</UseStandardCommands>')
     X(f'{i}<DefaultListForm/>')
     X(f'{i}<AuxiliaryListForm/>')
@@ -2473,17 +2701,47 @@ def emit_chart_of_calculation_types_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     X(f'{i}<UseStandardCommands>true</UseStandardCommands>')
-    code_length = str(defn['codeLength']) if defn.get('codeLength') is not None else '9'
-    description_length = str(defn['descriptionLength']) if defn.get('descriptionLength') is not None else '25'
+    code_length = str(defn['codeLength']) if defn.get('codeLength') is not None else '5'
+    description_length = str(defn['descriptionLength']) if defn.get('descriptionLength') is not None else '100'
     code_type = get_enum_prop('CodeType', 'codeType', 'String')
     code_allowed_length = get_enum_prop('CodeAllowedLength', 'codeAllowedLength', 'Variable')
     X(f'{i}<CodeLength>{code_length}</CodeLength>')
+    X(f'{i}<DescriptionLength>{description_length}</DescriptionLength>')
     X(f'{i}<CodeType>{code_type}</CodeType>')
     X(f'{i}<CodeAllowedLength>{code_allowed_length}</CodeAllowedLength>')
-    X(f'{i}<DescriptionLength>{description_length}</DescriptionLength>')
     X(f'{i}<DefaultPresentation>AsDescription</DefaultPresentation>')
+    emit_standard_attributes(i, 'ChartOfCalculationTypes')
+    X(f'{i}<EditType>InDialog</EditType>')
+    quick_choice = 'true' if defn.get('quickChoice') is True else 'false'
+    X(f'{i}<QuickChoice>{quick_choice}</QuickChoice>')
+    X(f'{i}<ChoiceMode>BothWays</ChoiceMode>')
+    input_fields = []
+    if description_length != '0':
+        input_fields.append(f'{i}\t<xr:Field>ChartOfCalculationTypes.{obj_name}.StandardAttribute.Description</xr:Field>')
+    if code_length != '0':
+        input_fields.append(f'{i}\t<xr:Field>ChartOfCalculationTypes.{obj_name}.StandardAttribute.Code</xr:Field>')
+    if input_fields:
+        X(f'{i}<InputByString>')
+        for field_line in input_fields:
+            X(field_line)
+        X(f'{i}</InputByString>')
+    else:
+        X(f'{i}<InputByString/>')
+    X(f'{i}<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>')
+    X(f'{i}<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>')
+    X(f'{i}<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>')
+    create_on_input = get_enum_prop('CreateOnInput', 'createOnInput', 'DontUse')
+    X(f'{i}<CreateOnInput>{create_on_input}</CreateOnInput>')
+    X(f'{i}<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>')
+    X(f'{i}<DefaultObjectForm/>')
+    X(f'{i}<DefaultListForm/>')
+    X(f'{i}<DefaultChoiceForm/>')
+    X(f'{i}<AuxiliaryObjectForm/>')
+    X(f'{i}<AuxiliaryListForm/>')
+    X(f'{i}<AuxiliaryChoiceForm/>')
+    X(f'{i}<BasedOn/>')
     dependence = get_enum_prop('DependenceOnCalculationTypes', 'dependenceOnCalculationTypes', 'DontUse')
     X(f'{i}<DependenceOnCalculationTypes>{dependence}</DependenceOnCalculationTypes>')
     base_types = as_array(defn.get('baseCalculationTypes'))
@@ -2496,27 +2754,58 @@ def emit_chart_of_calculation_types_properties(indent):
         X(f'{i}<BaseCalculationTypes/>')
     action_period_use = 'true' if defn.get('actionPeriodUse') is True else 'false'
     X(f'{i}<ActionPeriodUse>{action_period_use}</ActionPeriodUse>')
-    emit_standard_attributes(i, 'ChartOfCalculationTypes')
     X(f'{i}<Characteristics/>')
+    # Стандартные табличные части плана видов расчета: ведущие, вытесняющие и базовые виды.
+    # Состав задан платформой, настройке не подлежит.
+    X(f'{i}<StandardTabularSections>')
+    X(f'{i}\t<xr:StandardTabularSection name=\"LeadingCalculationTypes\">')
+    X(f'{i}\t\t<xr:Synonym>')
+    X(f'{i}\t\t\t<v8:item>')
+    X(f'{i}\t\t\t\t<v8:lang/>')
+    X(f'{i}\t\t\t\t<v8:content>Ведущие виды расчета</v8:content>')
+    X(f'{i}\t\t\t</v8:item>')
+    X(f'{i}\t\t</xr:Synonym>')
+    X(f'{i}\t\t<xr:Comment/>')
+    X(f'{i}\t\t<xr:ToolTip/>')
+    X(f'{i}\t\t<xr:FillChecking>DontCheck</xr:FillChecking>')
+    X(f'{i}\t\t<xr:StandardAttributes>')
+    for st_attr in ['Predefined', 'CalculationType', 'LineNumber']:
+        emit_standard_attribute(f'{i}\t\t\t', st_attr, st_attr == 'CalculationType')
+    X(f'{i}\t\t</xr:StandardAttributes>')
+    X(f'{i}\t</xr:StandardTabularSection>')
+    X(f'{i}\t<xr:StandardTabularSection name=\"DisplacingCalculationTypes\">')
+    X(f'{i}\t\t<xr:Synonym>')
+    X(f'{i}\t\t\t<v8:item>')
+    X(f'{i}\t\t\t\t<v8:lang/>')
+    X(f'{i}\t\t\t\t<v8:content>Вытесняющие виды расчета</v8:content>')
+    X(f'{i}\t\t\t</v8:item>')
+    X(f'{i}\t\t</xr:Synonym>')
+    X(f'{i}\t\t<xr:Comment/>')
+    X(f'{i}\t\t<xr:ToolTip/>')
+    X(f'{i}\t\t<xr:FillChecking>DontCheck</xr:FillChecking>')
+    X(f'{i}\t\t<xr:StandardAttributes>')
+    for st_attr in ['Predefined', 'CalculationType', 'LineNumber']:
+        emit_standard_attribute(f'{i}\t\t\t', st_attr, st_attr == 'CalculationType')
+    X(f'{i}\t\t</xr:StandardAttributes>')
+    X(f'{i}\t</xr:StandardTabularSection>')
+    X(f'{i}\t<xr:StandardTabularSection name=\"BaseCalculationTypes\">')
+    X(f'{i}\t\t<xr:Synonym>')
+    X(f'{i}\t\t\t<v8:item>')
+    X(f'{i}\t\t\t\t<v8:lang/>')
+    X(f'{i}\t\t\t\t<v8:content>Базовые виды расчета</v8:content>')
+    X(f'{i}\t\t\t</v8:item>')
+    X(f'{i}\t\t</xr:Synonym>')
+    X(f'{i}\t\t<xr:Comment/>')
+    X(f'{i}\t\t<xr:ToolTip/>')
+    X(f'{i}\t\t<xr:FillChecking>DontCheck</xr:FillChecking>')
+    X(f'{i}\t\t<xr:StandardAttributes>')
+    for st_attr in ['Predefined', 'CalculationType', 'LineNumber']:
+        emit_standard_attribute(f'{i}\t\t\t', st_attr, st_attr == 'CalculationType')
+    X(f'{i}\t\t</xr:StandardAttributes>')
+    X(f'{i}\t</xr:StandardTabularSection>')
+    X(f'{i}</StandardTabularSections>')
     X(f'{i}<PredefinedDataUpdate>Auto</PredefinedDataUpdate>')
-    X(f'{i}<EditType>InDialog</EditType>')
-    X(f'{i}<QuickChoice>true</QuickChoice>')
-    X(f'{i}<ChoiceMode>BothWays</ChoiceMode>')
-    X(f'{i}<InputByString>')
-    X(f'{i}\t<xr:Field>ChartOfCalculationTypes.{obj_name}.StandardAttribute.Description</xr:Field>')
-    X(f'{i}\t<xr:Field>ChartOfCalculationTypes.{obj_name}.StandardAttribute.Code</xr:Field>')
-    X(f'{i}</InputByString>')
-    X(f'{i}<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>')
-    X(f'{i}<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>')
-    X(f'{i}<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>')
-    X(f'{i}<DefaultObjectForm/>')
-    X(f'{i}<DefaultListForm/>')
-    X(f'{i}<DefaultChoiceForm/>')
-    X(f'{i}<AuxiliaryObjectForm/>')
-    X(f'{i}<AuxiliaryListForm/>')
-    X(f'{i}<AuxiliaryChoiceForm/>')
     X(f'{i}<IncludeHelpInContents>false</IncludeHelpInContents>')
-    X(f'{i}<BasedOn/>')
     X(f'{i}<DataLockFields/>')
     data_lock_control_mode = get_enum_prop('DataLockControlMode', 'dataLockControlMode', 'Managed')
     X(f'{i}<DataLockControlMode>{data_lock_control_mode}</DataLockControlMode>')
@@ -2527,22 +2816,18 @@ def emit_chart_of_calculation_types_properties(indent):
     X(f'{i}<ListPresentation/>')
     X(f'{i}<ExtendedListPresentation/>')
     X(f'{i}<Explanation/>')
-    X(f'{i}<CreateOnInput>Use</CreateOnInput>')
-    X(f'{i}<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>')
+    X(f'{i}<DataHistory>DontUse</DataHistory>')
+    X(f'{i}<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>')
+    X(f'{i}<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>')
 
 def emit_calculation_register_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     X(f'{i}<UseStandardCommands>true</UseStandardCommands>')
     X(f'{i}<DefaultListForm/>')
     X(f'{i}<AuxiliaryListForm/>')
-    chart_of_calc_types = str(defn['chartOfCalculationTypes']) if defn.get('chartOfCalculationTypes') else ''
-    if chart_of_calc_types:
-        X(f'{i}<ChartOfCalculationTypes>{chart_of_calc_types}</ChartOfCalculationTypes>')
-    else:
-        X(f'{i}<ChartOfCalculationTypes/>')
     periodicity = get_enum_prop('InformationRegisterPeriodicity', 'periodicity', 'Month')
     X(f'{i}<Periodicity>{periodicity}</Periodicity>')
     action_period = 'true' if defn.get('actionPeriod') is True else 'false'
@@ -2564,6 +2849,11 @@ def emit_calculation_register_properties(indent):
         X(f'{i}<ScheduleDate>{schedule_date}</ScheduleDate>')
     else:
         X(f'{i}<ScheduleDate/>')
+    chart_of_calc_types = str(defn['chartOfCalculationTypes']) if defn.get('chartOfCalculationTypes') else ''
+    if chart_of_calc_types:
+        X(f'{i}<ChartOfCalculationTypes>{chart_of_calc_types}</ChartOfCalculationTypes>')
+    else:
+        X(f'{i}<ChartOfCalculationTypes/>')
     X(f'{i}<IncludeHelpInContents>false</IncludeHelpInContents>')
     emit_standard_attributes(i, 'CalculationRegister')
     data_lock_control_mode = get_enum_prop('DataLockControlMode', 'dataLockControlMode', 'Managed')
@@ -2578,7 +2868,7 @@ def emit_business_process_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     X(f'{i}<UseStandardCommands>true</UseStandardCommands>')
     edit_type = get_enum_prop('EditType', 'editType', 'InDialog')
     X(f'{i}<EditType>{edit_type}</EditType>')
@@ -2633,7 +2923,7 @@ def emit_task_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     X(f'{i}<UseStandardCommands>true</UseStandardCommands>')
     number_type = get_enum_prop('NumberType', 'numberType', 'String')
     number_length = str(defn['numberLength']) if defn.get('numberLength') is not None else '14'
@@ -2700,7 +2990,7 @@ def emit_http_service_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     root_url = str(defn['rootURL']) if defn.get('rootURL') else obj_name.lower()
     X(f'{i}<RootURL>{esc_xml(root_url)}</RootURL>')
     reuse_sessions = get_enum_prop('ReuseSessions', 'reuseSessions', 'DontUse')
@@ -2712,7 +3002,7 @@ def emit_web_service_properties(indent):
     i = indent
     X(f'{i}<Name>{esc_xml(obj_name)}</Name>')
     emit_mltext(i, 'Synonym', synonym)
-    X(f'{i}<Comment/>')
+    emit_comment(i)
     namespace = str(defn['namespace']) if defn.get('namespace') else ''
     X(f'{i}<Namespace>{esc_xml(namespace)}</Namespace>')
     # Массив пакетов уходит в XML одной строкой через пробел: PowerShell склеивает массив
@@ -2723,6 +3013,9 @@ def emit_web_service_properties(indent):
         X(f'{i}<XDTOPackages>{xdto_packages}</XDTOPackages>')
     else:
         X(f'{i}<XDTOPackages/>')
+    # Имя файла описания сервиса платформа выводит из имени объекта.
+    descriptor = str(defn['descriptorFileName']) if defn.get('descriptorFileName') else f'{obj_name}.1cws'
+    X(f'{i}<DescriptorFileName>{esc_xml(descriptor)}</DescriptorFileName>')
     reuse_sessions = get_enum_prop('ReuseSessions', 'reuseSessions', 'DontUse')
     X(f'{i}<ReuseSessions>{reuse_sessions}</ReuseSessions>')
     session_max_age = str(defn['sessionMaxAge']) if defn.get('sessionMaxAge') is not None else '20'
@@ -2763,13 +3056,19 @@ def emit_column(indent, col_def):
     X(f'{indent}\t</Properties>')
     X(f'{indent}</Column>')
 
-def emit_accounting_flag(indent, flag_name):
+def emit_accounting_flag_props(indent, flag, tag):
+    """Признак учета и признак учета субконто различаются только именем элемента."""
+    if not isinstance(flag, dict):
+        flag = {'name': str(flag)}
+    flag_name = str(flag.get('name') or '')
     uid = new_uuid()
-    flag_synonym = split_camel_case(flag_name)
-    X(f'{indent}<AccountingFlag uuid="{uid}">')
+    synonym = flag.get('synonym') or split_camel_case(flag_name)
+    tooltip = flag.get('tooltip') or ''
+    fill_value = flag.get('fillValue')
+    X(f'{indent}<{tag} uuid="{uid}">')
     X(f'{indent}\t<Properties>')
     X(f'{indent}\t\t<Name>{esc_xml(flag_name)}</Name>')
-    emit_mltext(f'{indent}\t\t', 'Synonym', flag_synonym)
+    emit_mltext(f'{indent}\t\t', 'Synonym', synonym)
     X(f'{indent}\t\t<Comment/>')
     X(f'{indent}\t\t<Type>')
     X(f'{indent}\t\t\t<v8:Type>xs:boolean</v8:Type>')
@@ -2777,84 +3076,93 @@ def emit_accounting_flag(indent, flag_name):
     X(f'{indent}\t\t<PasswordMode>false</PasswordMode>')
     X(f'{indent}\t\t<Format/>')
     X(f'{indent}\t\t<EditFormat/>')
-    X(f'{indent}\t\t<ToolTip/>')
+    emit_mltext(f'{indent}\t\t', 'ToolTip', tooltip)
     X(f'{indent}\t\t<MarkNegatives>false</MarkNegatives>')
     X(f'{indent}\t\t<Mask/>')
     X(f'{indent}\t\t<MultiLine>false</MultiLine>')
     X(f'{indent}\t\t<ExtendedEdit>false</ExtendedEdit>')
     X(f'{indent}\t\t<MinValue xsi:nil="true"/>')
     X(f'{indent}\t\t<MaxValue xsi:nil="true"/>')
+    X(f'{indent}\t\t<FillFromFillingValue>false</FillFromFillingValue>')
+    if fill_value is True:
+        X(f'{indent}\t\t<FillValue xsi:type="xs:boolean">true</FillValue>')
+    elif fill_value is False:
+        X(f'{indent}\t\t<FillValue xsi:type="xs:boolean">false</FillValue>')
+    else:
+        # Незаданное значение заполнения платформа пишет пустой строкой, а не признаком nil.
+        X(f'{indent}\t\t<FillValue xsi:type="xs:string"/>')
     X(f'{indent}\t\t<FillChecking>DontCheck</FillChecking>')
+    X(f'{indent}\t\t<ChoiceFoldersAndItems>Items</ChoiceFoldersAndItems>')
     X(f'{indent}\t\t<ChoiceParameterLinks/>')
     X(f'{indent}\t\t<ChoiceParameters/>')
     X(f'{indent}\t\t<QuickChoice>Auto</QuickChoice>')
+    X(f'{indent}\t\t<CreateOnInput>Auto</CreateOnInput>')
     X(f'{indent}\t\t<ChoiceForm/>')
     X(f'{indent}\t\t<LinkByType/>')
     X(f'{indent}\t\t<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>')
+    X(f'{indent}\t\t<DataHistory>Use</DataHistory>')
     X(f'{indent}\t</Properties>')
-    X(f'{indent}</AccountingFlag>')
+    X(f'{indent}</{tag}>')
 
-def emit_ext_dimension_accounting_flag(indent, flag_name):
-    uid = new_uuid()
-    flag_synonym = split_camel_case(flag_name)
-    X(f'{indent}<ExtDimensionAccountingFlag uuid="{uid}">')
-    X(f'{indent}\t<Properties>')
-    X(f'{indent}\t\t<Name>{esc_xml(flag_name)}</Name>')
-    emit_mltext(f'{indent}\t\t', 'Synonym', flag_synonym)
-    X(f'{indent}\t\t<Comment/>')
-    X(f'{indent}\t\t<Type>')
-    X(f'{indent}\t\t\t<v8:Type>xs:boolean</v8:Type>')
-    X(f'{indent}\t\t</Type>')
-    X(f'{indent}\t\t<PasswordMode>false</PasswordMode>')
-    X(f'{indent}\t\t<Format/>')
-    X(f'{indent}\t\t<EditFormat/>')
-    X(f'{indent}\t\t<ToolTip/>')
-    X(f'{indent}\t\t<MarkNegatives>false</MarkNegatives>')
-    X(f'{indent}\t\t<Mask/>')
-    X(f'{indent}\t\t<MultiLine>false</MultiLine>')
-    X(f'{indent}\t\t<ExtendedEdit>false</ExtendedEdit>')
-    X(f'{indent}\t\t<MinValue xsi:nil="true"/>')
-    X(f'{indent}\t\t<MaxValue xsi:nil="true"/>')
-    X(f'{indent}\t\t<FillChecking>DontCheck</FillChecking>')
-    X(f'{indent}\t\t<ChoiceParameterLinks/>')
-    X(f'{indent}\t\t<ChoiceParameters/>')
-    X(f'{indent}\t\t<QuickChoice>Auto</QuickChoice>')
-    X(f'{indent}\t\t<ChoiceForm/>')
-    X(f'{indent}\t\t<LinkByType/>')
-    X(f'{indent}\t\t<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>')
-    X(f'{indent}\t</Properties>')
-    X(f'{indent}</ExtDimensionAccountingFlag>')
+def emit_accounting_flag(indent, flag):
+    emit_accounting_flag_props(indent, flag, 'AccountingFlag')
+
+def emit_ext_dimension_accounting_flag(indent, flag):
+    emit_accounting_flag_props(indent, flag, 'ExtDimensionAccountingFlag')
 
 def emit_url_template(indent, tmpl_name, tmpl_def):
     uid = new_uuid()
     tmpl_synonym = split_camel_case(tmpl_name)
     template = ''
+    tmpl_comment = ''
     methods = {}
     if isinstance(tmpl_def, str):
         template = tmpl_def
     else:
         template = str(tmpl_def['template']) if tmpl_def.get('template') else f'/{tmpl_name.lower()}'
+        if tmpl_def.get('synonym'):
+            tmpl_synonym = tmpl_def['synonym']
+        if tmpl_def.get('comment'):
+            tmpl_comment = str(tmpl_def['comment'])
         if tmpl_def.get('methods'):
             for k, v in tmpl_def['methods'].items():
-                methods[k] = str(v)
+                methods[k] = v
     X(f'{indent}<URLTemplate uuid="{uid}">')
     X(f'{indent}\t<Properties>')
     X(f'{indent}\t\t<Name>{esc_xml(tmpl_name)}</Name>')
     emit_mltext(f'{indent}\t\t', 'Synonym', tmpl_synonym)
+    if tmpl_comment:
+        X(f'{indent}\t\t<Comment>{esc_xml(tmpl_comment)}</Comment>')
+    else:
+        X(f'{indent}\t\t<Comment/>')
     X(f'{indent}\t\t<Template>{esc_xml(template)}</Template>')
     X(f'{indent}\t</Properties>')
     if methods:
         X(f'{indent}\t<ChildObjects>')
         # Порядок берется из JSON, а не по алфавиту: PowerShell-порт идет по свойствам в
         # порядке объявления, и Sort-Object в нем не встречается ни разу.
-        for method_name, http_method in methods.items():
+        for method_name, method_def in methods.items():
             method_uuid = new_uuid()
             method_synonym = split_camel_case(method_name)
-            handler = f'{tmpl_name}{method_name}'
+            method_comment = ''
+            if isinstance(method_def, str):
+                http_method = method_def
+                handler = f'{tmpl_name}{method_name}'
+            else:
+                http_method = str(method_def.get('httpMethod', 'GET'))
+                handler = str(method_def.get('handler') or f'{tmpl_name}{method_name}')
+                if method_def.get('synonym'):
+                    method_synonym = method_def['synonym']
+                if method_def.get('comment'):
+                    method_comment = str(method_def['comment'])
             X(f'{indent}\t\t<Method uuid="{method_uuid}">')
             X(f'{indent}\t\t\t<Properties>')
             X(f'{indent}\t\t\t\t<Name>{esc_xml(method_name)}</Name>')
             emit_mltext(f'{indent}\t\t\t\t', 'Synonym', method_synonym)
+            if method_comment:
+                X(f'{indent}\t\t\t\t<Comment>{esc_xml(method_comment)}</Comment>')
+            else:
+                X(f'{indent}\t\t\t\t<Comment/>')
             X(f'{indent}\t\t\t\t<HTTPMethod>{http_method}</HTTPMethod>')
             X(f'{indent}\t\t\t\t<Handler>{esc_xml(handler)}</Handler>')
             X(f'{indent}\t\t\t</Properties>')
@@ -2974,7 +3282,7 @@ xmlns_decl = 'xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8
 
 # Палитра появляется в шапке с формата 2.21 (8.5) и встает между lf и style.
 def get_xmlns_decl():
-    if float(format_version) >= 2.21:
+    if format_version_rank(format_version) >= 221:
         return xmlns_decl.replace(
             'xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style=',
             'xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style=')
@@ -3086,6 +3394,8 @@ X('\t\t</Properties>')
 has_children = False
 
 # --- Types with Attributes + TabularSections ---
+obj_commands = defn.get('commands') or {}
+
 types_with_attr_ts = [
     'Catalog', 'Document', 'Report', 'DataProcessor', 'ExchangePlan',
     'ChartOfCharacteristicTypes', 'ChartOfAccounts', 'ChartOfCalculationTypes',
@@ -3143,7 +3453,8 @@ if obj_type in types_with_attr_ts:
     addr_attrs = []
     if obj_type == 'Task' and defn.get('addressingAttributes'):
         addr_attrs = _as_list(defn['addressingAttributes'])
-    child_count = len(attrs) + len(ts_sections) + len(acct_flags) + len(ext_dim_flags) + len(addr_attrs)
+    child_count = (len(attrs) + len(ts_sections) + len(acct_flags) + len(ext_dim_flags)
+                   + len(addr_attrs) + len(obj_commands))
     if child_count > 0:
         has_children = True
         X('\t\t<ChildObjects>')
@@ -3163,11 +3474,11 @@ if obj_type in types_with_attr_ts:
             columns = ts_sections[ts_name]
             emit_tabular_section('\t\t\t', ts_name, columns, obj_type, obj_name, ts_options.get(ts_name))
         for af in acct_flags:
-            af_name = af['name'] if isinstance(af, dict) else str(af)
-            emit_accounting_flag('\t\t\t', af_name)
+            emit_accounting_flag('\t\t\t', af)
         for edf in ext_dim_flags:
-            edf_name = edf['name'] if isinstance(edf, dict) else str(edf)
-            emit_ext_dimension_accounting_flag('\t\t\t', edf_name)
+            emit_ext_dimension_accounting_flag('\t\t\t', edf)
+        for cmd_name, cmd_def in obj_commands.items():
+            emit_object_command('			', cmd_name, cmd_def)
         for aa in addr_attrs:
             emit_addressing_attribute('\t\t\t', aa)
         X('\t\t</ChildObjects>')
@@ -3180,11 +3491,13 @@ if obj_type == 'Enum':
     if defn.get('values'):
         for v in defn['values']:
             values.append(parse_enum_value_shorthand(v))
-    if values:
+    if values or obj_commands:
         has_children = True
         X('\t\t<ChildObjects>')
         for v in values:
             emit_enum_value('\t\t\t', v)
+        for cmd_name, cmd_def in obj_commands.items():
+            emit_object_command('\t\t\t', cmd_name, cmd_def)
         X('\t\t</ChildObjects>')
     else:
         X('\t\t<ChildObjects/>')
@@ -3205,7 +3518,7 @@ if obj_type in ('InformationRegister', 'AccumulationRegister', 'AccountingRegist
     if defn.get('attributes'):
         for a in defn['attributes']:
             reg_attrs.append(parse_attribute_shorthand(a))
-    if dims or resources or reg_attrs:
+    if dims or resources or reg_attrs or obj_commands:
         has_children = True
         X('\t\t<ChildObjects>')
         for r in resources:
@@ -3217,6 +3530,8 @@ if obj_type in ('InformationRegister', 'AccumulationRegister', 'AccountingRegist
         reg_ctx = 'register-info' if obj_type == 'InformationRegister' else 'register-other'
         for a in reg_attrs:
             emit_attribute('\t\t\t', a, reg_ctx)
+        for cmd_name, cmd_def in obj_commands.items():
+            emit_object_command('\t\t\t', cmd_name, cmd_def)
         X('\t\t</ChildObjects>')
     else:
         X('\t\t<ChildObjects/>')
@@ -3224,11 +3539,13 @@ if obj_type in ('InformationRegister', 'AccumulationRegister', 'AccountingRegist
 # --- DocumentJournal: columns ---
 if obj_type == 'DocumentJournal':
     columns = as_array(defn.get('columns'))
-    if columns:
+    if columns or obj_commands:
         has_children = True
         X('\t\t<ChildObjects>')
         for col in columns:
             emit_column('\t\t\t', col)
+        for cmd_name, cmd_def in obj_commands.items():
+            emit_object_command('\t\t\t', cmd_name, cmd_def)
         X('\t\t</ChildObjects>')
     else:
         X('\t\t<ChildObjects/>')
@@ -3379,8 +3696,172 @@ types_with_manager_module = ['Report', 'DataProcessor', 'Constant', 'Enum']
 types_with_value_manager_module = ['Constant']
 types_with_module = ['CommonModule', 'HTTPService', 'WebService']
 
+# --- Предопределенные элементы ---
+# Платформа хранит их отдельным файлом Ext/Predefined.xml, а не внутри описания объекта.
+PREDEFINED_ROOT_TYPE = {
+    'Catalog': 'CatalogPredefinedItems',
+    'ChartOfAccounts': 'ChartOfAccountsPredefinedItems',
+    'ChartOfCharacteristicTypes': 'PlanOfCharacteristicKindPredefinedItems',
+    'ChartOfCalculationTypes': 'CalculationTypePredefinedItems',
+}
+
+PREDEFINED_SHORTHAND = re.compile(
+    r'^\s*(?:\((?P<code>[^)]*)\)\s*)?(?P<name>[^\[\]:]+?)\s*'
+    r'(?:\[(?P<desc>[^\]]*)\])?\s*(?::\s*(?P<type>.+))?\s*$')
+
+
+def parse_predefined_item(raw):
+    """Элемент задается объектом или краткой записью "(код) Имя [описание]: Тип"."""
+    if isinstance(raw, dict):
+        # Копия делается прощающей: ключи элемента приходят и в другом регистре.
+        item = LenientDict(raw)
+        item.setdefault('description', split_camel_case(str(item.get('name', ''))))
+        return item
+    m = PREDEFINED_SHORTHAND.match(str(raw))
+    if not m:
+        return {'name': str(raw), 'description': split_camel_case(str(raw))}
+    item = {'name': m.group('name').strip()}
+    if m.group('code') is not None:
+        item['code'] = m.group('code')
+    item['description'] = (m.group('desc') if m.group('desc') is not None
+                           else split_camel_case(item['name']))
+    if m.group('type'):
+        item['type'] = m.group('type').strip()
+    return item
+
+
+def emit_predefined_code(item, indent, code_is_number):
+    code = str(item.get('code', ''))
+    if not code:
+        X(indent + '<Code/>')
+    elif code_is_number:
+        X(indent + '<Code xsi:type="xs:decimal">' + code + '</Code>')
+    else:
+        X(indent + '<Code>' + esc_xml(code) + '</Code>')
+
+
+def emit_predefined_flags(item, indent, flag_kind, declared, key, owner_name):
+    if not declared:
+        return
+    enabled = [str(x) for x in (item.get(key) or [])]
+    X(indent + '<AccountingFlags>')
+    for flag in declared:
+        value = 'true' if flag in enabled else 'false'
+        X(indent + '\t<Flag ref="ChartOfAccounts.' + owner_name + '.' + flag_kind + '.'
+          + flag + '">' + value + '</Flag>')
+    X(indent + '</AccountingFlags>')
+
+
+def emit_predefined_subconto(item, indent, ctx):
+    subconto = item.get('subconto') or []
+    if not subconto:
+        X(indent + '<ExtDimensionTypes/>')
+        return
+    X(indent + '<ExtDimensionTypes>')
+    for entry in subconto:
+        # Запись субконто: "ВидСубконто | Turnover, Признак1, Признак2".
+        parts = str(entry).split('|')
+        dim_name = parts[0].strip()
+        attrs = [a.strip() for a in parts[1].split(',')] if len(parts) > 1 else []
+        attrs = [a for a in attrs if a]
+        turnover = 'true' if ('Turnover' in attrs or 'Оборотный' in attrs) else 'false'
+        flags = [a for a in attrs if a not in ('Turnover', 'Оборотный')]
+        X(indent + '\t<ExtDimensionType name="' + ctx['owner'] + '.' + dim_name + '">')
+        X(indent + '\t\t<Turnover>' + turnover + '</Turnover>')
+        emit_predefined_flags({'flags': flags}, indent + '\t\t', 'ExtDimensionAccountingFlag',
+                              ctx['ext_flags'], 'flags', ctx['name'])
+        X(indent + '\t</ExtDimensionType>')
+    X(indent + '</ExtDimensionTypes>')
+
+
+def emit_predefined_item(item, indent, obj_kind, ctx):
+    X(indent + '<Item id="' + new_uuid() + '">')
+    i = indent + '\t'
+    X(i + '<Name>' + esc_xml(str(item.get('name', ''))) + '</Name>')
+    emit_predefined_code(item, i, ctx['code_is_number'])
+    desc = str(item.get('description', ''))
+    X(i + '<Description>' + esc_xml(desc) + '</Description>' if desc else i + '<Description/>')
+
+    if obj_kind == 'ChartOfCharacteristicTypes' and item.get('type'):
+        X(i + '<Type>')
+        emit_type_content(i + '\t', str(item['type']))
+        X(i + '</Type>')
+
+    if obj_kind == 'ChartOfAccounts':
+        X(i + '<AccountType>' + str(item.get('accountType', 'ActivePassive')) + '</AccountType>')
+        X(i + '<OffBalance>' + ('true' if item.get('offBalance') is True else 'false') + '</OffBalance>')
+        if 'order' in item:
+            X(i + '<Order>' + esc_xml(str(item['order'])) + '</Order>')
+        emit_predefined_flags(item, i, 'AccountingFlag', ctx['acct_flags'], 'flags', ctx['name'])
+        emit_predefined_subconto(item, i, ctx)
+
+    if obj_kind == 'ChartOfCalculationTypes':
+        base = 'true' if item.get('actionPeriodIsBase') is True else 'false'
+        X(i + '<ActionPeriodIsBase>' + base + '</ActionPeriodIsBase>')
+
+    # Признак группы есть у справочника и плана видов характеристик; у плана счетов
+    # иерархия задается кодом, и платформа этот признак не выгружает.
+    children = item.get('childItems') or []
+    if obj_kind in ('Catalog', 'ChartOfCharacteristicTypes'):
+        X(i + '<IsFolder>' + ('true' if item.get('isFolder') is True else 'false') + '</IsFolder>')
+    if children:
+        X(i + '<ChildItems>')
+        for child in children:
+            emit_predefined_item(parse_predefined_item(child), i + '\t', obj_kind, ctx)
+        X(i + '</ChildItems>')
+
+    X(indent + '</Item>')
+
+
 def ensure_ext_dir():
     os.makedirs(ext_dir, exist_ok=True)
+
+predefined_raw = defn.get('predefined')
+if predefined_raw and not isinstance(predefined_raw, bool) and obj_type in PREDEFINED_ROOT_TYPE:
+    predefined_items = list(predefined_raw)
+    if predefined_items:
+        acct_flags = []
+        ext_flags = []
+        subconto_owner = ''
+        if obj_type == 'ChartOfAccounts':
+            for flag in (defn.get('accountingFlags') or []):
+                acct_flags.append(flag if isinstance(flag, str) else str(flag.get('name', '')))
+            for flag in (defn.get('extDimensionAccountingFlags') or []):
+                ext_flags.append(flag if isinstance(flag, str) else str(flag.get('name', '')))
+            subconto_owner = str(defn.get('extDimensionTypes', ''))
+        predefined_ctx = {
+            'code_is_number': get_enum_prop('CodeType', 'codeType', 'String') == 'Number',
+            'acct_flags': acct_flags,
+            'ext_flags': ext_flags,
+            'owner': subconto_owner,
+            'name': obj_name,
+        }
+        del lines[:]
+        X('<?xml version="1.0" encoding="UTF-8"?>')
+        X('<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef"'
+          ' xmlns:v8="http://v8.1c.ru/8.1/data/core"'
+          ' xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"'
+          ' xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+          ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+          ' xsi:type="' + PREDEFINED_ROOT_TYPE[obj_type] + '" version="' + format_version + '">')
+        for raw_item in predefined_items:
+            emit_predefined_item(parse_predefined_item(raw_item), '\t', obj_type, predefined_ctx)
+        X('</PredefinedData>')
+        ensure_ext_dir()
+        predefined_path = os.path.join(ext_dir, 'Predefined.xml')
+        write_utf8_bom(predefined_path, '\r\n'.join(lines))
+        modules_created.append(predefined_path)
+
+# Модуль команды: платформа заводит его у каждой команды объекта, без метки порядка
+# байтов и с переводами строки LF.
+for cmd_name in (defn.get('commands') or {}):
+    cmd_dir = os.path.join(obj_sub_dir, 'Commands', cmd_name, 'Ext')
+    os.makedirs(cmd_dir, exist_ok=True)
+    cmd_module = os.path.join(cmd_dir, 'CommandModule.bsl')
+    if not os.path.isfile(cmd_module):
+        with open(cmd_module, 'w', encoding='utf-8', newline='') as fh:
+            fh.write('&НаКлиенте\nПроцедура ОбработкаКоманды(ПараметрКоманды, ПараметрыВыполненияКоманды)\n\n\t// Вставьте обработчик команды.\n\nКонецПроцедуры\n')
+        modules_created.append(cmd_module)
 
 if obj_type in types_with_object_module:
     module_path = os.path.join(ext_dir, 'ObjectModule.bsl')
@@ -3425,7 +3906,7 @@ if obj_type == 'CommonForm':
     if not os.path.isfile(form_xml_path):
         # Начиная с формата 2.21 (8.5) в шапке формы объявляется палитра - между lf и style.
         form_pal = ''
-        if float(format_version) >= 2.21:
+        if format_version_rank(format_version) >= 221:
             form_pal = ' xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"'
         form_ns = (
             'xmlns="http://v8.1c.ru/8.3/xcf/logform" '
@@ -3541,7 +4022,7 @@ if os.path.isfile(config_xml_path):
                 config_content = config_content[:block_start] + new_block + config_content[block_end:]
 
             # Хвостовой перевод строки НЕ добавляется: платформа его не пишет, и ps1-порт тоже.
-            write_utf8_bom(config_xml_path, config_content)
+            write_utf8_bom(config_xml_path, config_content, detect_file_eol(config_xml_path))
             reg_result = 'added'
 else:
     reg_result = 'no-config'

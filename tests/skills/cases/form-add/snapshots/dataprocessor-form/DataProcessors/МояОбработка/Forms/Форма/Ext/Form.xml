@@ -3,9 +3,6 @@
 	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1">
 		<Autofill>true</Autofill>
 	</AutoCommandBar>
-	<Events>
-		<Event name="OnCreateAtServer">ПриСозданииНаСервере</Event>
-	</Events>
 	<ChildItems/>
 	<Attributes>
 		<Attribute name="Объект" id="1">
@@ -13,7 +10,6 @@
 				<v8:Type>cfg:DataProcessorObject.МояОбработка</v8:Type>
 			</Type>
 			<MainAttribute>true</MainAttribute>
-			<SavedData>true</SavedData>
 		</Attribute>
 	</Attributes>
 </Form>

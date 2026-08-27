@@ -1,12 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"
-		xmlns:dcscom="http://v8.1c.ru/8.1/data-composition-system/common"
-		xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core"
-		xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings"
-		xmlns:v8="http://v8.1c.ru/8.1/data/core"
-		xmlns:v8ui="http://v8.1c.ru/8.1/data/ui"
-		xmlns:xs="http://www.w3.org/2001/XMLSchema"
-		xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcscom="http://v8.1c.ru/8.1/data-composition-system/common" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 	<dataSource>
 		<name>ИсточникДанных1</name>
 		<dataSourceType>Local</dataSourceType>
@@ -24,7 +17,12 @@
 			<dataPath>ЦелоеОдинАргумент</dataPath>
 			<field>ЦелоеОдинАргумент</field>
 			<valueType>
-				<v8:Type>decimal(10)</v8:Type>
+				<v8:Type>xs:decimal</v8:Type>
+				<v8:NumberQualifiers>
+					<v8:Digits>10</v8:Digits>
+					<v8:FractionDigits>0</v8:FractionDigits>
+					<v8:AllowedSign>Any</v8:AllowedSign>
+				</v8:NumberQualifiers>
 			</valueType>
 		</field>
 		<field xsi:type="DataSetFieldField">
@@ -55,7 +53,12 @@
 			<dataPath>ЦелоеПоложительное</dataPath>
 			<field>ЦелоеПоложительное</field>
 			<valueType>
-				<v8:Type>decimal(10,nonneg)</v8:Type>
+				<v8:Type>xs:decimal</v8:Type>
+				<v8:NumberQualifiers>
+					<v8:Digits>10</v8:Digits>
+					<v8:FractionDigits>0</v8:FractionDigits>
+					<v8:AllowedSign>Nonnegative</v8:AllowedSign>
+				</v8:NumberQualifiers>
 			</valueType>
 		</field>
 		<field xsi:type="DataSetFieldField">
@@ -69,7 +72,12 @@
 			<dataPath>ЧислоСинонимЦелое</dataPath>
 			<field>ЧислоСинонимЦелое</field>
 			<valueType>
-				<v8:Type>decimal(8)</v8:Type>
+				<v8:Type>xs:decimal</v8:Type>
+				<v8:NumberQualifiers>
+					<v8:Digits>8</v8:Digits>
+					<v8:FractionDigits>0</v8:FractionDigits>
+					<v8:AllowedSign>Any</v8:AllowedSign>
+				</v8:NumberQualifiers>
 			</valueType>
 		</field>
 		<field xsi:type="DataSetFieldField">
@@ -92,12 +100,19 @@
 		<valueType>
 			<v8:Type>decimal</v8:Type>
 		</valueType>
+		<useRestriction>false</useRestriction>
 	</parameter>
 	<parameter>
 		<name>ПараметрЦелое</name>
 		<valueType>
-			<v8:Type>decimal(10)</v8:Type>
+			<v8:Type>xs:decimal</v8:Type>
+			<v8:NumberQualifiers>
+				<v8:Digits>10</v8:Digits>
+				<v8:FractionDigits>0</v8:FractionDigits>
+				<v8:AllowedSign>Any</v8:AllowedSign>
+			</v8:NumberQualifiers>
 		</valueType>
+		<useRestriction>false</useRestriction>
 	</parameter>
 	<parameter>
 		<name>ПараметрКоличество</name>
@@ -109,6 +124,7 @@
 				<v8:AllowedSign>Nonnegative</v8:AllowedSign>
 			</v8:NumberQualifiers>
 		</valueType>
+		<useRestriction>false</useRestriction>
 	</parameter>
 	<settingsVariant>
 		<dcsset:name>Основной</dcsset:name>
@@ -120,6 +136,7 @@
 		</dcsset:presentation>
 		<dcsset:settings xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows">
 			<dcsset:selection>
+				<dcsset:item xsi:type="dcsset:SelectedItemAuto"/>
 			</dcsset:selection>
 			<dcsset:item xsi:type="dcsset:StructureItemGroup">
 				<dcsset:order>

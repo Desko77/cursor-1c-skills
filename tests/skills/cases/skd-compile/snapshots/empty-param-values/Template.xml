@@ -1,12 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"
-		xmlns:dcscom="http://v8.1c.ru/8.1/data-composition-system/common"
-		xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core"
-		xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings"
-		xmlns:v8="http://v8.1c.ru/8.1/data/core"
-		xmlns:v8ui="http://v8.1c.ru/8.1/data/ui"
-		xmlns:xs="http://www.w3.org/2001/XMLSchema"
-		xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcscom="http://v8.1c.ru/8.1/data-composition-system/common" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 	<dataSource>
 		<name>ИсточникДанных1</name>
 		<dataSourceType>Local</dataSourceType>
@@ -30,9 +23,13 @@
 	</dataSet>
 	<parameter>
 		<name>Параметр1</name>
+		<value xsi:nil="true"/>
+		<useRestriction>false</useRestriction>
 	</parameter>
 	<parameter>
 		<name>Параметр2: string =</name>
+		<value xsi:nil="true"/>
+		<useRestriction>false</useRestriction>
 	</parameter>
 	<parameter>
 		<name>ПараметрСписок</name>
@@ -40,6 +37,7 @@
 			<v8:Type xmlns:d5p1="http://v8.1c.ru/8.1/data/enterprise/current-config">d5p1:EnumRef.СтатусТеста</v8:Type>
 		</valueType>
 		<value xsi:type="xs:string">_</value>
+		<useRestriction>false</useRestriction>
 		<valueListAllowed>true</valueListAllowed>
 	</parameter>
 	<parameter>
@@ -47,6 +45,8 @@
 		<valueType>
 			<v8:Type xmlns:d5p1="http://v8.1c.ru/8.1/data/enterprise/current-config">d5p1:CatalogRef.ПлоскийПростой</v8:Type>
 		</valueType>
+		<value xsi:nil="true"/>
+		<useRestriction>false</useRestriction>
 	</parameter>
 	<parameter>
 		<name>ПараметрДата</name>
@@ -57,12 +57,14 @@
 			</v8:DateQualifiers>
 		</valueType>
 		<value xsi:type="xs:dateTime">null</value>
+		<useRestriction>false</useRestriction>
 	</parameter>
 	<parameter>
 		<name>ПараметрЧисло</name>
 		<valueType>
 			<v8:Type>decimal</v8:Type>
 		</valueType>
+		<useRestriction>false</useRestriction>
 	</parameter>
 	<parameter>
 		<name>ПараметрБулево</name>
@@ -70,6 +72,7 @@
 			<v8:Type>xs:boolean</v8:Type>
 		</valueType>
 		<value xsi:type="xs:boolean"></value>
+		<useRestriction>false</useRestriction>
 	</parameter>
 	<parameter>
 		<name>ПараметрСтандартныйПериод</name>
@@ -81,9 +84,12 @@
 			<v8:startDate>0001-01-01T00:00:00</v8:startDate>
 			<v8:endDate>0001-01-01T00:00:00</v8:endDate>
 		</value>
+		<useRestriction>false</useRestriction>
 	</parameter>
 	<parameter>
 		<name>ПараметрТипНеЗадан</name>
+		<value xsi:nil="true"/>
+		<useRestriction>false</useRestriction>
 	</parameter>
 	<parameter>
 		<name>ПараметрСписокСтрок</name>
@@ -94,6 +100,7 @@
 				<v8:AllowedLength>Variable</v8:AllowedLength>
 			</v8:StringQualifiers>
 		</valueType>
+		<useRestriction>false</useRestriction>
 		<valueListAllowed>true</valueListAllowed>
 	</parameter>
 	<parameter>
@@ -102,31 +109,46 @@
 			<v8:Type>time</v8:Type>
 		</valueType>
 		<value xsi:type="xs:dateTime">0001-01-01T12:30:00</value>
+		<useRestriction>false</useRestriction>
 	</parameter>
 	<parameter>
 		<name>ПараметрВремяПусто</name>
 		<valueType>
 			<v8:Type>time</v8:Type>
 		</valueType>
+		<useRestriction>false</useRestriction>
 	</parameter>
 	<parameter>
 		<name>ПараметрСтрокаФиксСЗначением</name>
 		<valueType>
-			<v8:Type>string(10,fix)</v8:Type>
+			<v8:Type>xs:string</v8:Type>
+			<v8:StringQualifiers>
+				<v8:Length>10</v8:Length>
+				<v8:AllowedLength>Fixed</v8:AllowedLength>
+			</v8:StringQualifiers>
 		</valueType>
 		<value xsi:type="xs:string">АБВ</value>
+		<useRestriction>false</useRestriction>
 	</parameter>
 	<parameter>
 		<name>ПараметрСтрокаФиксПусто</name>
 		<valueType>
-			<v8:Type>string(10,fix)</v8:Type>
+			<v8:Type>xs:string</v8:Type>
+			<v8:StringQualifiers>
+				<v8:Length>10</v8:Length>
+				<v8:AllowedLength>Fixed</v8:AllowedLength>
+			</v8:StringQualifiers>
 		</valueType>
+		<value xsi:type="xs:string"/>
+		<useRestriction>false</useRestriction>
 	</parameter>
 	<parameter>
 		<name>СоставнойТип</name>
 		<valueType>
 			<v8:Type xmlns:d5p1="http://v8.1c.ru/8.1/data/enterprise/current-config">d5p1:string(10,fix) CatalogRef.ПлоскийПростой</v8:Type>
 		</valueType>
+		<value xsi:type="xs:string"/>
+		<useRestriction>false</useRestriction>
 	</parameter>
 	<settingsVariant>
 		<dcsset:name>Основной</dcsset:name>
@@ -138,6 +160,7 @@
 		</dcsset:presentation>
 		<dcsset:settings xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows">
 			<dcsset:selection>
+				<dcsset:item xsi:type="dcsset:SelectedItemAuto"/>
 			</dcsset:selection>
 			<dcsset:item xsi:type="dcsset:StructureItemGroup">
 				<dcsset:order>

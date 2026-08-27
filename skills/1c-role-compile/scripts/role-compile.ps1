@@ -791,6 +791,14 @@ if ($script:inputErrors.Count -gt 0) {
 
 # --- Detect format version ---
 
+# Версии формата сравниваются по составным частям, а не как десятичная дробь:
+# 2.9 старее, чем 2.21, хотя как число больше.
+function Get-FormatVersionRank {
+	param([string]$Version)
+	if ($Version -match '^(\d+)\.(\d+)$') { return [int]$Matches[1] * 100 + [int]$Matches[2] }
+	return 0
+}
+
 function Detect-FormatVersion([string]$dir) {
 	$d = $dir
 	while ($d) {
@@ -829,7 +837,7 @@ $nsParts = @(
 	'xmlns:ent="http://v8.1c.ru/8.1/data/enterprise"',
 	'xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform"'
 )
-if ([double]::Parse($formatVersion, [System.Globalization.CultureInfo]::InvariantCulture) -ge 2.21) {
+if ((Get-FormatVersionRank $formatVersion) -ge 221) {
 	$nsParts += 'xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"'
 }
 $nsParts += @(
@@ -968,6 +976,8 @@ if (Test-Path $configXmlPath) {
 	$configDoc = New-Object System.Xml.XmlDocument
 	$configDoc.PreserveWhitespace = $true
 	$configDoc.Load($configXmlPath)
+	# Концы строк берутся из ФАЙЛА, который правим: регистрация не меняет его стиль.
+	$origCfgCrlf = [System.IO.File]::ReadAllText($configXmlPath).Contains("`r`n")
 
 	$nsMgr = New-Object System.Xml.XmlNamespaceManager($configDoc.NameTable)
 	$nsMgr.AddNamespace("md", "http://v8.1c.ru/8.3/MDClasses")
@@ -1027,6 +1037,8 @@ if (Test-Path $configXmlPath) {
 			# навык менял шапку чужого файла и давал лишнее расхождение со сверкой.
 			$tightText = $tightText.Replace('encoding="utf-8"', 'encoding="UTF-8"')
 			$tightText = [regex]::Replace($tightText, '(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|<([A-Za-z0-9_:.\-]+)((?:\s+[A-Za-z0-9_:.\-]+="[^"]*")*)\s+/>', { param($m) if ($m.Groups[1].Success) { '<' + $m.Groups[1].Value + $m.Groups[2].Value + '/>' } else { $m.Value } })
+			$tightText = $tightText.Replace("`r`n", "`n")
+			if ($origCfgCrlf) { $tightText = $tightText.Replace("`n", "`r`n") }
 			[System.IO.File]::WriteAllText($tightPath, $tightText, (New-Object System.Text.UTF8Encoding($true)))
 
 			$regResult = "added"

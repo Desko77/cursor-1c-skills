@@ -454,6 +454,11 @@ _FORM_TYPE_SYNONYMS = {
 def resolve_type_str(type_str):
     if not type_str:
         return type_str
+    # Срезается только префикс выгрузки конфигурации: схемные префиксы (v8:, xs:, v8ui:)
+    # часть имени типа, и без них тип не разрешается.
+    m_prefix = re.match(r'^(?:cfg|d\d+p\d+):(.+)$', type_str)
+    if m_prefix:
+        type_str = m_prefix.group(1)
     m = re.match(r'^([^(]+)\((.+)\)$', type_str)
     if m:
         base, params = m.group(1).strip(), m.group(2)
@@ -1102,6 +1107,21 @@ def find_element(start_node, target_name):
 
 # ── 7. Detect indent level of a container's children ────────
 
+def place_new_section(parent, section, previous=None):
+    """Новый раздел формы получает отступ соседа: без хвоста он приклеивается к тегу рядом."""
+    idx = list(parent).index(section)
+    if previous is None and idx > 0:
+        previous = parent[idx - 1]
+    if previous is None:
+        section.tail = '\n'
+        return
+    if idx == len(parent) - 1:
+        # Раздел встал последним: отступ достается ему от соседа, а соседу - отступ раздела.
+        section.tail = previous.tail if previous.tail else '\n'
+        child_indent = get_child_indent(parent) or '\t'
+        previous.tail = '\n' + child_indent
+    else:
+        section.tail = previous.tail if previous.tail else '\n'
 def get_child_indent(container):
     for child_node in container:
         if not isinstance(child_node.tag, str):
@@ -1232,8 +1252,10 @@ if elements_list:
         if insert_after is not None:
             idx = list(root).index(insert_after) + 1
             root.insert(idx, target_ci)
+            place_new_section(root, target_ci, insert_after)
         else:
             root.append(target_ci)
+            place_new_section(root, target_ci)
         root_ci = target_ci
 
     # Detect indent level
@@ -1250,7 +1272,10 @@ if elements_list:
             el_name = get_element_name(el, type_key)
             existing = find_element(root_ci, el_name) if root_ci is not None else None
             if existing is not None:
-                print(f"[WARN] Element '{el_name}' already exists in form (id={existing.get('id')})")
+                # Имя элемента формы уникально: платформа второй такой не примет,
+                # а правка с предупреждением оставляла форму с двумя одинаковыми.
+                print(f"[ERROR] Элемент '{el_name}' в форме уже есть (id={existing.get('id')})", file=sys.stderr)
+                sys.exit(1)
 
     # Remember starting element ID for companion counting
     start_elem_id = next_elem_id
@@ -1301,6 +1326,7 @@ if attrs_list:
     attrs_section = root.find("f:Attributes", NS)
     if attrs_section is None:
         attrs_section = etree.SubElement(root, f"{{{FORM_NS}}}Attributes")
+        place_new_section(root, attrs_section)
 
     attr_child_indent = get_child_indent(attrs_section)
     if not attr_child_indent:
@@ -1362,6 +1388,7 @@ if cmds_list:
     cmds_section = root.find("f:Commands", NS)
     if cmds_section is None:
         cmds_section = etree.SubElement(root, f"{{{FORM_NS}}}Commands")
+        place_new_section(root, cmds_section)
 
     cmd_child_indent = get_child_indent(cmds_section)
     if not cmd_child_indent:

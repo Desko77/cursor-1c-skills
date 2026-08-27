@@ -1528,11 +1528,13 @@ def new_uuid():
     return str(uuid.uuid4())
 
 
-def write_utf8_bom(path, content):
+def write_utf8_bom(path, content, eol='\r\n'):
     # Исходники 1С хранятся в CRLF: этого ждет Конфигуратор, и это закреплено в .gitattributes.
     # Сборка идет через '\n'.join, поэтому концы строк разворачиваются здесь, на записи.
     # Нормализация идемпотентна - смешанный текст тоже приходит к одному виду.
-    content = content.replace('\r\n', '\n').replace('\n', '\r\n')
+    # Правка существующего файла передает сюда его собственный eol: форсировать CRLF там
+    # нельзя, иначе навык переписывает весь чужой файл ради одной добавленной строки.
+    content = content.replace('\r\n', '\n').replace('\n', eol)
     with open(path, 'w', encoding='utf-8-sig', newline='') as f:
         f.write(content)
 
@@ -1754,6 +1756,11 @@ _FORM_TYPE_SYNONYMS = {
 def resolve_type_str(type_str):
     if not type_str:
         return type_str
+    # Срезается только префикс выгрузки конфигурации: схемные префиксы (v8:, xs:, v8ui:)
+    # часть имени типа, и без них тип не разрешается.
+    m_prefix = re.match(r'^(?:cfg|d\d+p\d+):(.+)$', type_str)
+    if m_prefix:
+        type_str = m_prefix.group(1)
     m = re.match(r'^([^(]+)\((.+)\)$', type_str)
     if m:
         base, params = m.group(1).strip(), m.group(2)
@@ -1768,15 +1775,26 @@ def resolve_type_str(type_str):
     return r if r else type_str
 
 
+def lookup_ci(table, key):
+    """Поиск по словарю без учета регистра - хеш-таблица PowerShell ведет себя так же."""
+    if key in table:
+        return table[key]
+    low = str(key).lower()
+    for k, v in table.items():
+        if str(k).lower() == low:
+            return v
+    return None
+
+
 def emit_single_type(lines, type_str, indent):
     type_str = resolve_type_str(type_str)
     # boolean
-    if type_str == 'boolean':
+    if type_str.lower() == 'boolean':
         lines.append(f'{indent}<v8:Type>xs:boolean</v8:Type>')
         return
 
     # string or string(N)
-    m = re.match(r'^string(\((\d+)\))?$', type_str)
+    m = re.match(r'^string(\((\d+)\))?$', type_str, re.IGNORECASE)
     if m:
         length = m.group(2) if m.group(2) else '0'
         lines.append(f'{indent}<v8:Type>xs:string</v8:Type>')
@@ -1787,7 +1805,7 @@ def emit_single_type(lines, type_str, indent):
         return
 
     # decimal(D,F) or decimal(D,F,nonneg)
-    m = re.match(r'^decimal\((\d+),(\d+)(,nonneg)?\)$', type_str)
+    m = re.match(r'^decimal\((\d+),(\d+)(,nonneg)?\)$', type_str, re.IGNORECASE)
     if m:
         digits = m.group(1)
         fraction = m.group(2)
@@ -1801,10 +1819,10 @@ def emit_single_type(lines, type_str, indent):
         return
 
     # date / dateTime / time
-    m = re.match(r'^(date|dateTime|time)$', type_str)
+    m = re.match(r'^(date|dateTime|time)$', type_str, re.IGNORECASE)
     if m:
-        fractions_map = {'date': 'Date', 'dateTime': 'DateTime', 'time': 'Time'}
-        fractions = fractions_map[type_str]
+        fractions_map = {'date': 'Date', 'datetime': 'DateTime', 'time': 'Time'}
+        fractions = fractions_map[type_str.lower()]
         lines.append(f'{indent}<v8:Type>xs:dateTime</v8:Type>')
         lines.append(f'{indent}<v8:DateQualifiers>')
         lines.append(f'{indent}\t<v8:DateFractions>{fractions}</v8:DateFractions>')
@@ -1812,13 +1830,15 @@ def emit_single_type(lines, type_str, indent):
         return
 
     # V8 types
-    if type_str in V8_TYPES:
-        lines.append(f'{indent}<v8:Type>{V8_TYPES[type_str]}</v8:Type>')
+    v8_hit = lookup_ci(V8_TYPES, type_str)
+    if v8_hit is not None:
+        lines.append(f'{indent}<v8:Type>{v8_hit}</v8:Type>')
         return
 
     # UI types
-    if type_str in UI_TYPES:
-        lines.append(f'{indent}<v8:Type>{UI_TYPES[type_str]}</v8:Type>')
+    ui_hit = lookup_ci(UI_TYPES, type_str)
+    if ui_hit is not None:
+        lines.append(f'{indent}<v8:Type>{ui_hit}</v8:Type>')
         return
 
     # DCS types
@@ -1961,6 +1981,81 @@ def emit_group(lines, el, name, eid, indent):
     lines.append(f'{indent}</UsualGroup>')
 
 
+DATETIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
+
+
+def choice_value_type(value):
+    if isinstance(value, bool):
+        return 'xs:boolean'
+    if isinstance(value, (int, float)):
+        return 'xs:decimal'
+    if DATETIME_RE.match(str(value)):
+        return 'xs:dateTime'
+    return 'xs:string'
+
+
+def format_choice_value(value):
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    return esc_xml(str(value))
+
+
+def parse_short_choice_value(text):
+    """В краткой форме все значения текстовые, поэтому тип выводится из написания."""
+    v = text.strip()
+    if v == 'true':
+        return True
+    if v == 'false':
+        return False
+    if re.match(r"^-?\d+(\.\d+)?$", v):
+        return float(v) if '.' in v else int(v)
+    return v
+
+
+def emit_choice_parameters(lines, el, indent):
+    """Имя параметра выбора уходит в атрибут XML и требует экранирования."""
+    params = el.get('choiceParameters')
+    if not params:
+        return
+    lines.append(f'{indent}<ChoiceParameters>')
+    for raw in params:
+        # Краткая форма записи параметра - строка "Имя=Значение", значения в ней
+        # перечисляются через запятую.
+        if isinstance(raw, str):
+            name, sep, tail = raw.partition('=')
+            cp_name = name.strip()
+            has_value = bool(sep)
+            values = [parse_short_choice_value(x) for x in tail.split(',')] if sep else []
+        else:
+            cp_name = str(raw.get('name', ''))
+            has_value = 'value' in raw
+            value = raw.get('value')
+            values = list(value) if isinstance(value, list) else [value]
+
+        lines.append(f'{indent}	<app:item name="{esc_xml(cp_name)}">')
+        lines.append(f'{indent}		<app:value xsi:type="FormChoiceListDesTimeValue">')
+        lines.append(f'{indent}			<Presentation/>')
+        if not has_value:
+            lines.append(f'{indent}			<Value xsi:type="xs:string"/>')
+        elif len(values) > 1:
+            # Несколько значений платформа хранит списком значений.
+            lines.append(f'{indent}			<Value xsi:type="v8:ValueListType">')
+            for v in values:
+                lines.append(f'{indent}				<v8:item>')
+                lines.append(f'{indent}					<v8:presentation/>')
+                lines.append(f'{indent}					<v8:value xsi:type="{choice_value_type(v)}">'
+                             f'{format_choice_value(v)}</v8:value>')
+                lines.append(f'{indent}				</v8:item>')
+            lines.append(f'{indent}			</Value>')
+        else:
+            single = values[0]
+            lines.append(f'{indent}			<Value xsi:type="{choice_value_type(single)}">'
+                         f'{format_choice_value(single)}</Value>')
+        lines.append(f'{indent}		</app:value>')
+        lines.append(f'{indent}	</app:item>')
+    lines.append(f'{indent}</ChoiceParameters>')
+
+
 def emit_input(lines, el, name, eid, indent):
     lines.append(f'{indent}<InputField name="{name}" id="{eid}">')
     inner = f'{indent}\t'
@@ -2007,6 +2102,8 @@ def emit_input(lines, el, name, eid, indent):
 
     if el.get('inputHint'):
         emit_mltext(lines, inner, 'InputHint', str(el['inputHint']))
+
+    emit_choice_parameters(lines, el, inner)
 
     # Companions
     emit_companion(lines, 'ContextMenu', f'{name}\u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442\u043d\u043e\u0435\u041c\u0435\u043d\u044e', inner)
@@ -2386,6 +2483,15 @@ def emit_popup(lines, el, name, eid, indent):
 
 # --- Attribute emitter ---
 
+def emit_attr_column(lines, col, indent):
+    """Колонка реквизита формы: имя, идентификатор, заголовок и тип."""
+    lines.append(f'{indent}<Column name="{col["name"]}" id="{new_id()}">')
+    if col.get('title'):
+        emit_mltext(lines, f'{indent}\t', 'Title', col['title'])
+    emit_type(lines, str(col.get('type', '')), f'{indent}\t')
+    lines.append(f'{indent}</Column>')
+
+
 def emit_attributes(lines, attrs, indent):
     # Блок реквизитов есть в выгрузке всегда: у формы без реквизитов он пустой.
     if not attrs or len(attrs) == 0:
@@ -2400,8 +2506,12 @@ def emit_attributes(lines, attrs, indent):
         lines.append(f'{indent}\t<Attribute name="{attr_name}" id="{attr_id}">')
         inner = f'{indent}\t\t'
 
+        # Заголовок реквизита формы платформа проставляет сама: у обычного реквизита он равен
+        # имени, у основного отсутствует.
         if attr.get('title'):
             emit_mltext(lines, inner, 'Title', attr['title'])
+        elif attr.get('main') is not True:
+            emit_mltext(lines, inner, 'Title', attr_name)
 
         # Type
         if attr.get('type'):
@@ -2411,21 +2521,51 @@ def emit_attributes(lines, attrs, indent):
 
         if attr.get('main') is True:
             lines.append(f'{inner}<MainAttribute>true</MainAttribute>')
+        # Основной реквизит хранится между сеансами - платформа пишет это признаком.
+        # Признак сохраняемых данных пишется только по явному ключу: платформа выставляет
+        # его у основного реквизита сама, и лишняя запись расходится с выгрузкой.
         if attr.get('savedData') is True:
             lines.append(f'{inner}<SavedData>true</SavedData>')
         if attr.get('fillChecking'):
             lines.append(f'{inner}<FillChecking>{attr["fillChecking"]}</FillChecking>')
 
-        # Columns (for ValueTable/ValueTree)
-        if attr.get('columns') and len(attr['columns']) > 0:
+        # UseAlways: поля, читаемые с сервера всегда. Имя без точки достраивается именем
+        # реквизита; знак ~ остается впереди. Колонки с признаком идут следом.
+        use_always = []
+        for field in (attr.get('useAlways') or []):
+            field = str(field)
+            mark = ''
+            if field.startswith('~'):
+                mark, field = '~', field[1:]
+            if '.' not in field:
+                field = attr_name + '.' + field
+            use_always.append(mark + field)
+        for col in (attr.get('columns') or []):
+            if col.get('useAlways') is True:
+                use_always.append(attr_name + '.' + str(col.get('name', '')))
+        if use_always:
+            lines.append(f'{inner}<UseAlways>')
+            for field in use_always:
+                lines.append(f'{inner}\t<Field>{field}</Field>')
+            lines.append(f'{inner}</UseAlways>')
+
+        # Columns (for ValueTable/ValueTree) + AdditionalColumns табличных частей объекта.
+        # Порядок платформы: сначала прямые колонки, затем группы дополнительных.
+        add_cols = attr.get('additionalColumns') or []
+        direct_cols = attr.get('columns') or []
+        if direct_cols or add_cols:
             lines.append(f'{inner}<Columns>')
-            for col in attr['columns']:
-                col_id = new_id()
-                lines.append(f'{inner}\t<Column name="{col["name"]}" id="{col_id}">')
-                if col.get('title'):
-                    emit_mltext(lines, f'{inner}\t\t', 'Title', col['title'])
-                emit_type(lines, str(col.get('type', '')), f'{inner}\t\t')
-                lines.append(f'{inner}\t</Column>')
+            for col in direct_cols:
+                emit_attr_column(lines, col, f'{inner}\t')
+            for ac in add_cols:
+                ac_cols = ac.get('columns') or []
+                if not ac_cols:
+                    lines.append(f'{inner}\t<AdditionalColumns table="{ac["table"]}"/>')
+                    continue
+                lines.append(f'{inner}\t<AdditionalColumns table="{ac["table"]}">')
+                for col in ac_cols:
+                    emit_attr_column(lines, col, f'{inner}\t\t')
+                lines.append(f'{inner}\t</AdditionalColumns>')
             lines.append(f'{inner}</Columns>')
 
         # Settings (for DynamicList)
@@ -2651,6 +2791,40 @@ def _normalize_elements(defn):
     return defn
 
 
+ELEMENT_TYPE_KEYS = ("group", "input", "check", "label", "labelField", "table", "pages",
+                     "page", "button", "picture", "picField", "calendar", "cmdBar", "popup")
+
+
+def check_duplicate_elements(items, seen):
+    """Первое повторяющееся имя элемента формы или пустая строка."""
+    for el in items:
+        if not isinstance(el, dict):
+            continue
+        type_key = next((k for k in ELEMENT_TYPE_KEYS if el.get(k) is not None), None)
+        if type_key:
+            el_name = str(el.get('name') or el.get(type_key) or '')
+            if el_name:
+                # Имена в 1С регистронезависимы: два элемента, различающиеся регистром,
+                # столкнутся на форме.
+                key = el_name.lower()
+                if key in seen:
+                    return el_name
+                seen.add(key)
+        # Вложенные элементы лежат в children - так их читают и сборщики XML.
+        nested = el.get('children')
+        if isinstance(nested, list):
+            found = check_duplicate_elements(nested, seen)
+            if found:
+                return found
+    return ""
+
+
+def format_version_rank(version):
+    """Версии сравниваются по составным частям: 2.9 старее, чем 2.21, хотя как число больше."""
+    m = re.match(r"^(\d+)\.(\d+)$", str(version or ""))
+    return int(m.group(1)) * 100 + int(m.group(2)) if m else 0
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
@@ -2802,6 +2976,31 @@ def main():
         with open(json_path, 'r', encoding='utf-8-sig') as f:
             defn = lenient(json.load(f))
 
+    # --- 1a. Проверка описания формы ---
+    # Ошибки ниже платформа обнаружит только при открытии формы, а часть - молча проглотит:
+    # два элемента с одним именем дают форму, где второй недоступен из кода.
+    dup = check_duplicate_elements(defn.get('elements') or [], set())
+    if dup:
+        print(f"Duplicate element name: {dup}", file=sys.stderr)
+        sys.exit(1)
+
+    seen_commands = set()
+    for cmd in (defn.get('commands') or []):
+        cmd_name = str(cmd.get('name', ''))
+        if not cmd_name:
+            continue
+        if cmd_name.lower() in seen_commands:
+            print(f"Duplicate command name: {cmd_name}", file=sys.stderr)
+            sys.exit(1)
+        seen_commands.add(cmd_name.lower())
+
+    for attr in (defn.get('attributes') or []):
+        for ac in (attr.get('additionalColumns') or []):
+            if 'columns' not in ac:
+                print(f"Additional columns for table '{ac.get('table')}': key 'columns' is missing",
+                      file=sys.stderr)
+                sys.exit(1)
+
     # --- 2. Main compilation ---
     _next_id = 0
     lines = []
@@ -2809,7 +3008,7 @@ def main():
     lines.append('<?xml version="1.0" encoding="UTF-8"?>')
     # Начиная с формата 2.21 (8.5) в шапке объявляется палитра - между lf и style.
     pal_ns = (' xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"'
-              if float(format_version) >= 2.21 else '')
+              if format_version_rank(format_version) >= 221 else '')
     lines.append(f'<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:dcssch="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform"{pal_ns} xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="{format_version}">')
 
     # Title

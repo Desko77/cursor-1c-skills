@@ -161,6 +161,18 @@ function Assert-EditAllowed([string]$targetPath, [string]$require) {
 }
 # --- Конец общего блока гарда поддержки ---
 
+# Скрипт соседнего навыка. Каталог навыка назван с префиксом 1c-, без него пути нет.
+function Get-SiblingSkillScript {
+	param([string]$name, [string]$scriptName)
+	foreach ($folder in @("1c-$name", $name)) {
+		$candidate = Join-Path (Join-Path $PSScriptRoot "..\..\$folder") "scripts\$scriptName"
+		$candidate = [System.IO.Path]::GetFullPath($candidate)
+		if (Test-Path $candidate) { return $candidate }
+	}
+	return ""
+}
+
+
 # ============================================================
 # Section 1: Parameters + loading
 # ============================================================
@@ -217,7 +229,7 @@ $script:validEnumValues = @{
 	"RegisterRecordsDeletion"        = @("AutoDelete","AutoDeleteOnUnpost","AutoDeleteOff")
 	"RegisterRecordsWritingOnPost"   = @("WriteModified","WriteSelected","WriteAll")
 	"ReturnValuesReuse"              = @("DontUse","DuringRequest","DuringSession")
-	"ReuseSessions"                  = @("DontUse","AutoUse")
+	"ReuseSessions"                  = @("DontUse","Use","AutoUse")
 	"FillChecking"                   = @("DontCheck","ShowError","ShowWarning")
 	"Indexing"                       = @("DontIndex","Index","IndexWithAdditionalOrder")
 }
@@ -244,6 +256,14 @@ function Get-EditDistance {
 
 # Имя из списка, отличающееся от заданного не более чем на две правки. Порог выбран так, чтобы
 # ловить перестановку и пропуск буквы, но не считать опечаткой другое свойство.
+# Версии формата сравниваются по составным частям, а не как десятичная дробь:
+# 2.9 старее, чем 2.21, хотя как число больше.
+function Get-FormatVersionRank {
+	param([string]$Version)
+	if ($Version -match '^(\d+)\.(\d+)$') { return [int]$Matches[1] * 100 + [int]$Matches[2] }
+	return 0
+}
+
 function Find-TypoCandidate {
 	param([string]$Name, [string[]]$Candidates)
 	$best = $null
@@ -260,25 +280,24 @@ function Find-TypoCandidate {
 # Стандартные реквизиты платформы по типу объекта: реквизит с таким именем она отвергает при
 # загрузке. Набор зависит от типа - "Тип" стандартен у плана видов характеристик и плана
 # счетов, а у справочника такого реквизита нет и имя законно.
-$script:standardAttributesCommon = @(
-	"Ref","Ссылка","DeletionMark","ПометкаУдаления","Predefined","Предопределенный",
-	"PredefinedDataName","ИмяПредопределенныхДанных"
-)
-
-$script:standardAttributesByType = @{
-	"Catalog" = @("Code","Код","Description","Наименование","Parent","Родитель","Owner","Владелец","IsFolder","ЭтоГруппа")
-	"Document" = @("Date","Дата","Number","Номер","Posted","Проведен")
-	"ChartOfCharacteristicTypes" = @("Code","Код","Description","Наименование","Parent","Родитель","IsFolder","ЭтоГруппа","Type","Тип","ValueType","ТипЗначения")
-	"ChartOfAccounts" = @("Code","Код","Description","Наименование","Type","Тип","OffBalance","Забалансовый","Order","Порядок")
-	"ChartOfCalculationTypes" = @("Code","Код","Description","Наименование","ActionPeriodIsBasic","БазовыйПериодЯвляетсяОсновным")
-	"BusinessProcess" = @("Date","Дата","Number","Номер","Started","Стартован","Completed","Завершен","HeadTask","ВедущаяЗадача")
-	"Task" = @("Date","Дата","Number","Номер","Description","Наименование","Executed","Выполнена","RoutePoint","ТочкаМаршрута","BusinessProcess","БизнесПроцесс")
-	"ExchangePlan" = @("Code","Код","Description","Наименование","ThisNode","ЭтотУзел","SentNo","НомерОтправленного","ReceivedNo","НомерПринятого")
-	"InformationRegister" = @("Period","Период","Recorder","Регистратор","Active","Активность")
+# Имена стандартных реквизитов по типу объекта, обе формы записи. Набор совпадает с составом,
+# который выпускает meta-compile: имени вне этого набора платформа не запрещает, и общего
+# для всех типов списка нет - у обработки нет Ссылки, у документа нет Предопределенного.
+$script:reservedAttributesByType = @{
+	"Catalog" = @("PredefinedDataName","ИмяПредопределенныхДанных","Predefined","Предопределенный","Ref","Ссылка","DeletionMark","ПометкаУдаления","IsFolder","ЭтоГруппа","Owner","Владелец","Parent","Родитель","Description","Наименование","Code","Код")
+	"Document" = @("Ref","Ссылка","DeletionMark","ПометкаУдаления","Date","Дата","Number","Номер","Posted","Проведен")
+	"Enum" = @("Ref","Ссылка","Order","Порядок")
+	"InformationRegister" = @("Period","Период","Recorder","Регистратор","LineNumber","НомерСтроки","Active","Активность")
 	"AccumulationRegister" = @("Period","Период","Recorder","Регистратор","LineNumber","НомерСтроки","Active","Активность")
 	"AccountingRegister" = @("Period","Период","Recorder","Регистратор","LineNumber","НомерСтроки","Active","Активность","Account","Счет")
-	"CalculationRegister" = @("RegistrationPeriod","ПериодРегистрации","CalculationType","ВидРасчета","Recorder","Регистратор","LineNumber","НомерСтроки","Active","Активность","ReversingEntry","СторноЗапись")
-	# У табличной части стандартный реквизит один - номер строки.
+	"CalculationRegister" = @("Recorder","Регистратор","LineNumber","НомерСтроки","Active","Активность","RegistrationPeriod","ПериодРегистрации","CalculationType","ВидРасчета","ReversingEntry","СторноЗапись")
+	"ChartOfAccounts" = @("PredefinedDataName","ИмяПредопределенныхДанных","Predefined","Предопределенный","Ref","Ссылка","DeletionMark","ПометкаУдаления","Description","Наименование","Code","Код","Parent","Родитель","Order","Порядок","Type","Тип","OffBalance","Забалансовый")
+	"ChartOfCharacteristicTypes" = @("PredefinedDataName","ИмяПредопределенныхДанных","Predefined","Предопределенный","Ref","Ссылка","DeletionMark","ПометкаУдаления","Description","Наименование","Code","Код","Parent","Родитель","IsFolder","ЭтоГруппа","ValueType","ТипЗначения")
+	"ChartOfCalculationTypes" = @("PredefinedDataName","ИмяПредопределенныхДанных","Predefined","Предопределенный","Ref","Ссылка","DeletionMark","ПометкаУдаления","Description","Наименование","Code","Код","ActionPeriodIsBasic","БазовыйПериодЯвляетсяОсновным")
+	"BusinessProcess" = @("Ref","Ссылка","DeletionMark","ПометкаУдаления","Date","Дата","Number","Номер","Started","Стартован","Completed","Завершен","HeadTask","ВедущаяЗадача")
+	"Task" = @("Ref","Ссылка","DeletionMark","ПометкаУдаления","Date","Дата","Number","Номер","Description","Наименование","Executed","Выполнена","RoutePoint","ТочкаМаршрута","BusinessProcess","БизнесПроцесс")
+	"ExchangePlan" = @("Ref","Ссылка","DeletionMark","ПометкаУдаления","Code","Код","Description","Наименование","ThisNode","ЭтотУзел","SentNo","НомерОтправленного","ReceivedNo","НомерПринятого")
+	"DocumentJournal" = @("Ref","Ссылка","Type","Тип","Date","Дата","Number","Номер","Posted","Проведен","DeletionMark","ПометкаУдаления")
 	"TabularSection" = @("LineNumber","НомерСтроки")
 }
 
@@ -286,18 +305,8 @@ function Assert-AttributeNameAllowed {
 	param([string]$Name, [string]$OwnerType)
 	if (-not $Name) { return }
 	$normalized = $Name.Replace([char]0x451, [char]0x435).Replace([char]0x401, [char]0x415)
-
-	$forbidden = @()
-	if ($OwnerType -eq "TabularSection") {
-		$forbidden = $script:standardAttributesByType["TabularSection"]
-	} else {
-		$forbidden = $script:standardAttributesCommon
-		if ($script:standardAttributesByType.ContainsKey($OwnerType)) {
-			$forbidden += $script:standardAttributesByType[$OwnerType]
-		}
-	}
-
-	foreach ($standard in $forbidden) {
+	if (-not $script:reservedAttributesByType.ContainsKey($OwnerType)) { return }
+	foreach ($standard in $script:reservedAttributesByType[$OwnerType]) {
 		if ($standard -ieq $normalized) {
 			Write-Error "Имя '$Name' зарезервировано стандартным реквизитом платформы у типа '$OwnerType'"
 			exit 1
@@ -371,6 +380,12 @@ Assert-EditAllowed $resolvedPath "editable"
 $script:xmlDoc = New-Object System.Xml.XmlDocument
 $script:xmlDoc.PreserveWhitespace = $true
 $script:xmlDoc.Load($resolvedPath)
+
+# Версию формата задает шапка правимого файла: часть свойств есть только с определенной версии.
+$script:formatVersion = "2.17"
+$rootNode = $script:xmlDoc.DocumentElement
+if ($rootNode -and $rootNode.GetAttribute("version")) { $script:formatVersion = $rootNode.GetAttribute("version") }
+$script:formatRank = Get-FormatVersionRank $script:formatVersion
 
 # --- Counters ---
 $script:addCount = 0
@@ -509,8 +524,11 @@ function Split-CamelCase {
 	if (-not $name) { return $name }
 	$result = [regex]::Replace($name, '([а-яё])([А-ЯЁ])', '$1 $2')
 	$result = [regex]::Replace($result, '([a-z])([A-Z])', '$1 $2')
+	# Регистр понижается только у одиночной заглавной: аббревиатура из нескольких
+	# заглавных подряд (API, НДС) остается как написана.
 	if ($result.Length -gt 1) {
-		$result = $result.Substring(0,1) + $result.Substring(1).ToLower()
+		$tail = [regex]::Replace($result.Substring(1), '(?<![А-ЯЁA-Z])([А-ЯЁA-Z])(?![А-ЯЁA-Z])', { param($m) $m.Groups[1].Value.ToLower() })
+		$result = $result.Substring(0,1) + $tail
 	}
 	return $result
 }
@@ -522,6 +540,11 @@ function New-Guid-String {
 function Resolve-TypeStr {
 	param([string]$typeStr)
 	if (-not $typeStr) { return $typeStr }
+	# Тип, скопированный из выгрузки, несет префикс пространства имен: cfg:, d5p1:, d4p1:.
+	# В описании он лишний - имя типа платформа читает без него.
+	# Срезается только префикс выгрузки конфигурации: схемные префиксы (v8:, xs:, v8ui:)
+	# часть имени типа, и без них тип не разрешается.
+	if ($typeStr -match '^(?:cfg|d\d+p\d+):(.+)$') { $typeStr = $Matches[1] }
 
 	# Parameterized: Number(15,2), Строка(100)
 	if ($typeStr -match '^([^(]+)\((.+)\)$') {
@@ -1540,6 +1563,10 @@ function Build-EnumValueFragment {
 	$sb.AppendLine("$indent`t`t<Name>$(Esc-Xml $parsed.name)</Name>") | Out-Null
 	$sb.AppendLine($(Build-MLTextXml "$indent`t`t" "Synonym" $parsed.synonym)) | Out-Null
 	$sb.AppendLine("$indent`t`t<Comment/>") | Out-Null
+	# Цвет значения перечисления появился в формате 2.21 (8.5); auto означает выбор платформы.
+	if ($script:formatRank -ge 221) {
+		$sb.AppendLine("$indent`t`t<Color>auto</Color>") | Out-Null
+	}
 	$sb.AppendLine("$indent`t</Properties>") | Out-Null
 	$sb.Append("$indent</EnumValue>") | Out-Null
 	return $sb.ToString()
@@ -2875,6 +2902,18 @@ $text = $text.Replace('encoding="utf-8"', 'encoding="UTF-8"')
 $text = [regex]::Replace($text, '(?s)<!\[CDATA\[.*?\]\]>|<!--.*?-->|<([A-Za-z0-9_:.\-]+)((?:\s+[A-Za-z0-9_:.\-]+="[^"]*")*)\s+/>', { param($m) if ($m.Groups[1].Success) { '<' + $m.Groups[1].Value + $m.Groups[2].Value + '/>' } else { $m.Value } })
 
 # Write with BOM
+# Концы строк берутся из ФАЙЛА, который правим: объекты конфигурации хранятся в CRLF,
+# схемы компоновки в LF. Форсировать один вид нельзя - навык испортит чужой формат.
+$origText = if (Test-Path $resolvedPath) { [System.IO.File]::ReadAllText($resolvedPath) } else { "" }
+$origCrlf = $origText.Contains("`r`n")
+$text = $text.Replace("`r`n", "`n")
+if ($origCrlf) { $text = $text.Replace("`n", "`r`n") }
+# Хвостовой перевод исходного файла тоже сохраняется: универсального правила нет,
+# часть навыков его пишет, часть нет - правка не должна это менять.
+if ($origText.EndsWith("`n") -and -not $text.EndsWith("`n")) {
+	$text += if ($origCrlf) { "`r`n" } else { "`n" }
+}
+
 $utf8Bom = New-Object System.Text.UTF8Encoding($true)
 [System.IO.File]::WriteAllText($resolvedPath, $text, $utf8Bom)
 
@@ -2885,9 +2924,8 @@ Info "Saved: $resolvedPath"
 # ============================================================
 
 if (-not $NoValidate) {
-	$validateScript = Join-Path (Join-Path $PSScriptRoot "..\..\meta-validate") "scripts\meta-validate.ps1"
-	$validateScript = [System.IO.Path]::GetFullPath($validateScript)
-	if (Test-Path $validateScript) {
+	$validateScript = Get-SiblingSkillScript "meta-validate" "meta-validate.ps1"
+	if ($validateScript) {
 		Write-Host ""
 		Write-Host "--- Running meta-validate ---" -ForegroundColor DarkGray
 		& powershell.exe -NoProfile -File $validateScript -ObjectPath $resolvedPath

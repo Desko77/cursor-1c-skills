@@ -176,12 +176,177 @@ if (-not $def.columns) {
 	[Console]::Error.WriteLine("Required field 'columns' is missing")
 	exit 1
 }
-if (-not $def.areas) {
+if (-not $def.areas -and -not $def.rows) {
 	[Console]::Error.WriteLine("Required field 'areas' is missing")
 	exit 1
 }
 
+# Идентификатор набора колонок выводится из его имени: UUID версии 3 (MD5) без
+# пространства имен - одно и то же имя всегда дает один и тот же идентификатор.
+function Get-NameUuid {
+	param([string]$name)
+	$md5 = [System.Security.Cryptography.MD5]::Create()
+	$bytes = $md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($name))
+	$bytes[6] = [byte](($bytes[6] -band 0x0F) -bor 0x30)
+	$bytes[8] = [byte](($bytes[8] -band 0x3F) -bor 0x80)
+	$hex = ($bytes | ForEach-Object { $_.ToString("x2") }) -join ""
+	return "$($hex.Substring(0,8))-$($hex.Substring(8,4))-$($hex.Substring(12,4))-$($hex.Substring(16,4))-$($hex.Substring(20,12))"
+}
+
+# Координаты области 1-based, а ноль дал бы -1 - сентинел отсутствующей оси.
+function Test-NamedAreaBounds {
+	param([int]$begin, [int]$end, [string]$axis, [int]$index, [string]$name)
+	if ($begin -lt 1 -or $end -lt $begin) {
+		[Console]::Error.WriteLine("namedAreas: '$axis' must be a 1-based number or ascending range, got `"$begin-$end`": namedAreas[$index] `"$name`"")
+		exit 1
+	}
+	return @{ Begin = $begin; End = $end }
+}
+
+# Ось именованной области задается числом или диапазоном; список через запятую не
+# описывает прямоугольник и потому отвергается.
+function Get-NamedAreaRange {
+	param($value, [string]$axis, [int]$index, [string]$name)
+	$text = "$value"
+	if ($text -match ',') {
+		[Console]::Error.WriteLine("namedAreas: '$axis' must be a single number or range, got list `"$text`": namedAreas[$index] `"$name`"")
+		exit 1
+	}
+	if ($text -match '^\s*(\d+)\s*-\s*(\d+)\s*$') { return Test-NamedAreaBounds ([int]$Matches[1]) ([int]$Matches[2]) $axis $index $name }
+	if ($text -match '^\s*(\d+)\s*$') { return Test-NamedAreaBounds ([int]$Matches[1]) ([int]$Matches[1]) $axis $index $name }
+	[Console]::Error.WriteLine("namedAreas: '$axis' must be a single number or range, got `"$text`": namedAreas[$index] `"$name`"")
+	exit 1
+}
+
+# Строка задается массивом: элемент на колонку слева направо. Такая запись разворачивается в
+# канонический вид до расчета форматов и вывода, поэтому дальше по коду вид строки один.
+function ConvertTo-CellTable {
+	param($cell)
+	if ($cell -is [hashtable]) { return $cell }
+	$t = @{}
+	foreach ($p in $cell.PSObject.Properties) { $t[$p.Name] = $p.Value }
+	return $t
+}
+
+function ConvertTo-RowTable {
+	param($row)
+	if ($row -is [hashtable]) { return $row }
+	$t = @{}
+	foreach ($p in $row.PSObject.Properties) { $t[$p.Name] = $p.Value }
+	if ($t.cells) {
+		$cells = @()
+		foreach ($c in @($t.cells)) { $cells += (ConvertTo-CellTable $c) }
+		$t.cells = $cells
+	}
+	return $t
+}
+
+function Get-ShorthandCell {
+	param([string]$value, [int]$col)
+	# Фигурные скобки означают параметр, квадратные внутри строки - шаблонный текст.
+	if ($value -match '^\{(.+)\}$') { return @{ col = $col; param = $Matches[1] } }
+	if ($value -match '\[.+\]') { return @{ col = $col; template = $value } }
+	return @{ col = $col; text = $value }
+}
+
+function Expand-AreaRows {
+	param($areaRows, [string]$areaName)
+	$expanded = @()
+	$prevOccupied = @{}
+	$rowNo = 0
+	foreach ($row in @($areaRows)) {
+		$rowNo++
+		if ($row -isnot [array]) {
+			$table = ConvertTo-RowTable $row
+			$occupied = @{}
+			if ($table.cells) {
+				foreach ($c in @($table.cells)) {
+					# Колонка без явного номера раскладывается позже, в основном проходе: до
+					# него занятые ей клетки неизвестны, поэтому в опору для '|' она не идет.
+					if (-not $c.col) { continue }
+					$span = if ($c.span) { [int]$c.span } else { 1 }
+					for ($k = 0; $k -lt $span; $k++) { $occupied[[int]$c.col + $k] = $c }
+				}
+			}
+			$prevOccupied = $occupied
+			$expanded += $table
+			continue
+		}
+
+		$cells = @()
+		$occupied = @{}
+		$lastCell = $null
+		$colNo = 0
+		foreach ($item in $row) {
+			$colNo++
+			if ($null -eq $item) { $lastCell = $null; continue }
+
+			if ($item -is [string] -and $item -eq ">") {
+				if (-not $lastCell) {
+					[Console]::Error.WriteLine("Row shorthand: '>' has no cell to the left: area `"$areaName`", row $rowNo, cell $colNo")
+					exit 1
+				}
+				$curSpan = if ($lastCell.span) { [int]$lastCell.span } else { 1 }
+				$lastCell.span = $curSpan + 1
+				$occupied[$colNo] = $lastCell
+				continue
+			}
+
+			if ($item -is [string] -and $item -eq "|") {
+				$above = $prevOccupied[$colNo]
+				if (-not $above) {
+					[Console]::Error.WriteLine("Row shorthand: '|' has no cell above: area `"$areaName`", row $rowNo, cell $colNo")
+					exit 1
+				}
+				$curRowspan = if ($above.rowspan) { [int]$above.rowspan } else { 1 }
+				$above.rowspan = $curRowspan + 1
+				$occupied[$colNo] = $above
+				$lastCell = $null
+				continue
+			}
+
+			if ($item -is [string]) {
+				$cell = Get-ShorthandCell -value $item -col $colNo
+			} else {
+				$cell = ConvertTo-CellTable $item
+				if ($cell.Contains("col")) {
+					[Console]::Error.WriteLine("Row shorthand: cell object must not carry 'col': area `"$areaName`", row $rowNo, cell $colNo")
+					exit 1
+				}
+				$cell.col = $colNo
+			}
+			$cells += $cell
+			$span = if ($cell.span) { [int]$cell.span } else { 1 }
+			for ($k = 0; $k -lt $span; $k++) { $occupied[$colNo + $k] = $cell }
+			$lastCell = $cell
+		}
+		$prevOccupied = $occupied
+		$expanded += @{ cells = $cells }
+	}
+	return ,$expanded
+}
+
+# Строки вне именованных областей обрабатываются как безымянная область: в файл она не
+# попадает, но строки выгружаются так же.
+$sheetAreas = @()
+if ($def.areas) { $sheetAreas += @($def.areas) }
+if ($def.rows) {
+	$sheetAreas += (New-Object PSObject -Property @{ name = ""; rows = $def.rows })
+}
+
+$normalizedAreas = @()
+foreach ($area in $sheetAreas) {
+	$normalizedAreas += (New-Object PSObject -Property @{
+		name = $area.name
+		columnSet = $area.columnSet
+		rows = (Expand-AreaRows -areaRows $area.rows -areaName "$($area.name)")
+	})
+}
+$sheetAreas = $normalizedAreas
+
 $totalColumns = [int]$def.columns
+# Языки, на которые идет текст ячейки, заданный одной строкой.
+$textLanguages = if ($def.textLanguages) { @($def.textLanguages | ForEach-Object { "$_" }) } else { @("ru") }
 $defaultWidth = if ($def.defaultWidth) { [int]$def.defaultWidth } else { 10 }
 
 # --- 2. Build font palette ---
@@ -192,7 +357,9 @@ $fontEntries = @()        # array of hashtables
 function Add-Font {
 	param([string]$name, $fontDef)
 	$face = if ($fontDef.face) { $fontDef.face } else { "Arial" }
-	$size = if ($fontDef.size) { [int]$fontDef.size } else { 10 }
+	$size = if ($fontDef.size) {
+		[System.Convert]::ToString([double]$fontDef.size, [System.Globalization.CultureInfo]::InvariantCulture)
+	} else { "10" }
 	$bold = if ($fontDef.bold -eq $true) { "true" } else { "false" }
 	$italic = if ($fontDef.italic -eq $true) { "true" } else { "false" }
 	$underline = if ($fontDef.underline -eq $true) { "true" } else { "false" }
@@ -201,6 +368,11 @@ function Add-Font {
 	$idx = $script:fontEntries.Count
 	$script:fontMap[$name] = $idx
 	$script:fontEntries += @{
+		# Шрифт задается либо своими свойствами, либо ссылкой на элемент стиля или
+		# системный шрифт - тогда своих свойств у него нет.
+		Ref       = if ($fontDef.ref) { "$($fontDef.ref)" } else { "" }
+		Kind      = if ($fontDef.kind) { "$($fontDef.kind)" } else { "Absolute" }
+		Namespace = $fontDef.namespace
 		Face      = $face
 		Size      = $size
 		Bold      = $bold
@@ -220,10 +392,7 @@ if ($def.fonts) {
 }
 
 # Ensure default font exists
-if (-not $hasDefault) {
-	$defaultDef = New-Object PSObject -Property @{ face = "Arial"; size = 10 }
-	Add-Font -name "default" -fontDef $defaultDef
-}
+# Шрифт по умолчанию не объявляется: платформа пишет шрифт только там, где он задан.
 
 # --- 3. Determine line palette ---
 
@@ -340,14 +509,56 @@ if ($def.columnWidths) {
 	}
 }
 
+# Набор колонок - своя раскладка ширин для части строк. Ширины разбираются тем же
+# правилом, что и основные, а идентификатор берется из описания или выводится из имени.
+$columnSets = [ordered]@{}
+if ($def.columnSets) {
+	foreach ($prop in $def.columnSets.PSObject.Properties) {
+		$setDef = $prop.Value
+		$setWidths = @{}
+		if ($setDef.columnWidths) {
+			foreach ($wp in $setDef.columnWidths.PSObject.Properties) {
+				$val = "$($wp.Value)"
+				if ($val -match '^([0-9.]+)x$') {
+					$width = [int][math]::Round([double]$Matches[1] * $defaultWidth)
+				} else {
+					$width = [int]$val
+				}
+				foreach ($c in (Parse-ColumnSpec $wp.Name)) { $setWidths[$c] = $width }
+			}
+		}
+		$columnSets[$prop.Name] = @{
+			Id       = if ($setDef.id) { "$($setDef.id)" } else { Get-NameUuid $prop.Name }
+			Columns  = if ($setDef.columns) { [int]$setDef.columns } else { $totalColumns }
+			WidthMap = $setWidths
+		}
+	}
+}
+
+# Ссылка на набор допустима только именем: объект на месте имени - ошибка описания.
+function Resolve-ColumnSetName {
+	param($value, [string]$areaName)
+	if ($null -eq $value) { return $null }
+	if ($value -isnot [string]) {
+		[Console]::Error.WriteLine("'columnSet' must be a name declared in columnSets, got an object: area `"$areaName`"")
+		exit 1
+	}
+	if (-not $columnSets.Contains($value)) {
+		[Console]::Error.WriteLine("'columnSet' is not declared in columnSets: `"$value`", area `"$areaName`"")
+		exit 1
+	}
+	return $value
+}
+
 # --- 5. Style resolver ---
 
 function Resolve-Style {
 	param([string]$styleName, [string]$fillType)
 
-	$fontIdx = $fontMap["default"]
+	$fontIdx = if ($fontMap.Contains("default")) { $fontMap["default"] } else { -1 }
 	$lb = -1; $tb = -1; $rb = -1; $bb = -1
 	$ha = ""; $va = ""; $nf = ""
+	$textColor = ""
 	$wrap = $false
 
 	if ($styleName -and $def.styles) {
@@ -372,18 +583,22 @@ function Resolve-Style {
 				}
 			}
 
-			# Alignment
-			if ($style.align) {
-				switch ($style.align) {
+			# Выравнивание задается коротким ключом или полным именем свойства платформы.
+			$alignValue = if ($style.align) { "$($style.align)" } elseif ($style.horizontalAlignment) { "$($style.horizontalAlignment)" } else { "" }
+			if ($alignValue) {
+				switch ($alignValue.ToLower()) {
 					"left"   { $ha = "Left" }
 					"center" { $ha = "Center" }
 					"right"  { $ha = "Right" }
+					"justify" { $ha = "Justify" }
 				}
 			}
-			if ($style.valign) {
-				switch ($style.valign) {
+			$valignValue = if ($style.valign) { "$($style.valign)" } elseif ($style.verticalAlignment) { "$($style.verticalAlignment)" } else { "" }
+			if ($valignValue) {
+				switch ($valignValue.ToLower()) {
 					"top"    { $va = "Top" }
 					"center" { $va = "Center" }
+					"bottom" { $va = "Bottom" }
 				}
 			}
 
@@ -392,6 +607,9 @@ function Resolve-Style {
 
 			# Number format
 			if ($style.format) { $nf = $style.format }
+
+			# Цвет текста задается ссылкой на элемент стиля платформы.
+			if ($style.textColor) { $textColor = "$($style.textColor)" }
 		}
 	}
 
@@ -402,6 +620,7 @@ function Resolve-Style {
 		Wrap         = $wrap
 		FillType     = $fillType
 		NumberFormat = $nf
+		TextColor    = $textColor
 	}
 }
 
@@ -419,9 +638,11 @@ function Get-FormatKey {
 		[string]$fillType = "",
 		[string]$numberFormat = "",
 		[int]$width = -1,
-		[int]$height = -1
+		[int]$height = -1,
+		[string]$textColor = "",
+		[bool]$hidden = $false
 	)
-	return "f=$fontIdx|lb=$lb|tb=$tb|rb=$rb|bb=$bb|ha=$ha|va=$va|wr=$wrap|ft=$fillType|nf=$numberFormat|w=$width|h=$height"
+	return "f=$fontIdx|lb=$lb|tb=$tb|rb=$rb|bb=$bb|ha=$ha|va=$va|wr=$wrap|ft=$fillType|nf=$numberFormat|w=$width|h=$height|tc=$textColor|hd=$hidden"
 }
 
 function Register-Format {
@@ -439,10 +660,6 @@ function Register-Format {
 	return $idx
 }
 
-# 6a. Default width format
-$defaultFormatKey = Get-FormatKey -width $defaultWidth
-$defaultFormatIndex = Register-Format -key $defaultFormatKey -props @{ Width = $defaultWidth }
-
 # 6b. Column width formats
 $colFormatMap = @{}  # 1-based col -> format index
 foreach ($col in ($colWidthMap.Keys | Sort-Object)) {
@@ -450,6 +667,18 @@ foreach ($col in ($colWidthMap.Keys | Sort-Object)) {
 	$key = Get-FormatKey -width $w
 	$idx = Register-Format -key $key -props @{ Width = $w }
 	$colFormatMap[[int]$col] = $idx
+}
+
+# 6b-1. Форматы ширин наборов колонок
+$setFormatMaps = @{}
+foreach ($setName in $columnSets.Keys) {
+	$map = @{}
+	$widths = $columnSets[$setName].WidthMap
+	foreach ($col in ($widths.Keys | Sort-Object)) {
+		$w = $widths[$col]
+		$map[[int]$col] = Register-Format -key (Get-FormatKey -width $w) -props @{ Width = $w }
+	}
+	$setFormatMaps[$setName] = $map
 }
 
 # 6c. Scan areas for row heights and cell formats
@@ -462,11 +691,23 @@ function Esc-Xml {
 }
 
 # Helper: determine fillType from cell content
+# Текст ячейки задается строкой - тогда он идет на все языки вывода - или объектом
+# вида "язык: текст", тогда на каждый язык идет свой.
+function Get-TextItems {
+	param($value)
+	$items = @()
+	if ($value -is [string]) {
+		foreach ($lang in $textLanguages) { $items += @{ Lang = $lang; Content = $value } }
+		return ,$items
+	}
+	foreach ($p in $value.PSObject.Properties) { $items += @{ Lang = $p.Name; Content = "$($p.Value)" } }
+	return ,$items
+}
+
 function Get-FillType {
 	param($cell)
 	if ($cell.param) { return "Parameter" }
 	if ($cell.template) { return "Template" }
-	if ($cell.text) { return "Text" }
 	return ""
 }
 
@@ -478,7 +719,8 @@ function Register-CellFormat {
 		-lb $resolved.LB -tb $resolved.TB -rb $resolved.RB -bb $resolved.BB `
 		-ha $resolved.HA -va $resolved.VA `
 		-wrap $resolved.Wrap -fillType $resolved.FillType `
-		-numberFormat $resolved.NumberFormat
+		-numberFormat $resolved.NumberFormat -textColor $resolved.TextColor
+	if ($key -eq (Get-FormatKey -fontIdx -1)) { return 0 }
 	$props = @{
 		FontIdx      = $resolved.FontIdx
 		LB           = $resolved.LB; TB = $resolved.TB
@@ -487,20 +729,46 @@ function Register-CellFormat {
 		Wrap         = $resolved.Wrap
 		FillType     = $resolved.FillType
 		NumberFormat = $resolved.NumberFormat
+		TextColor    = $resolved.TextColor
 	}
 	return Register-Format -key $key -props $props
 }
 
+# Формат строки собирается из высоты, скрытия и собственного стиля строки: платформа
+# держит их одним форматом.
+function Get-RowFormat {
+	param($row)
+	$rowHeight = if ($row.height) { [int]$row.height } else { -1 }
+	$rowHidden = ($row.hidden -eq $true)
+	$props = @{ Hidden = $rowHidden }
+	if ($rowHeight -ge 0) { $props["Height"] = $rowHeight }
+	if (-not $row.style) {
+		return @{ Key = (Get-FormatKey -height $rowHeight -hidden $rowHidden); Props = $props }
+	}
+	$r = Resolve-Style -styleName $row.style -fillType ""
+	$props["FontIdx"] = $r.FontIdx
+	$props["LB"] = $r.LB; $props["TB"] = $r.TB
+	$props["RB"] = $r.RB; $props["BB"] = $r.BB
+	$props["HA"] = $r.HA; $props["VA"] = $r.VA
+	$props["Wrap"] = $r.Wrap
+	$props["NumberFormat"] = $r.NumberFormat
+	$props["TextColor"] = $r.TextColor
+	$key = Get-FormatKey -fontIdx $r.FontIdx -lb $r.LB -tb $r.TB -rb $r.RB -bb $r.BB `
+		-ha $r.HA -va $r.VA -wrap $r.Wrap -numberFormat $r.NumberFormat `
+		-textColor $r.TextColor -height $rowHeight -hidden $rowHidden
+	return @{ Key = $key; Props = $props }
+}
+
 # Pre-register all formats from areas
-foreach ($area in $def.areas) {
+foreach ($area in $sheetAreas) {
 	foreach ($row in $area.rows) {
 		# Skip empty row placeholder
 		if ($row.empty) { continue }
 
 		# Row height format
-		if ($row.height) {
-			$hKey = Get-FormatKey -height ([int]$row.height)
-			Register-Format -key $hKey -props @{ Height = [int]$row.height } | Out-Null
+		if ($row.height -or $row.hidden -eq $true -or $row.style) {
+			$rf = Get-RowFormat $row
+			Register-Format -key $rf.Key -props $rf.Props | Out-Null
 		}
 
 		# rowStyle gap-fill format (no content → no fillType)
@@ -523,28 +791,63 @@ foreach ($area in $def.areas) {
 
 $xml = New-Object System.Text.StringBuilder 4096
 
+# Версии формата сравниваются по составным частям, а не как десятичная дробь:
+# 2.9 старее, чем 2.21, хотя как число больше.
+function Get-FormatVersionRank {
+	param([string]$Version)
+	if ($Version -match '^(\d+)\.(\d+)$') { return [int]$Matches[1] * 100 + [int]$Matches[2] }
+	return 0
+}
+
 function X {
 	param([string]$text)
 	$script:xml.AppendLine($text) | Out-Null
 }
+
+# Ширина по умолчанию идет последним форматом палитры: платформа пишет ее после всех прочих.
+$defaultFormatKey = Get-FormatKey -width $defaultWidth
+$defaultFormatIndex = Register-Format -key $defaultFormatKey -props @{ Width = $defaultWidth }
 
 # 7a. Header
 X '<?xml version="1.0" encoding="UTF-8"?>'
 # Палитра появляется в шапке макета с формата 2.21 (8.5) и встает после основного
 # пространства имен.
 $mxlTemplateVersion = Get-TemplateFormatVersion $OutputPath
-$mxlPal = if ([double]::Parse($mxlTemplateVersion, [System.Globalization.CultureInfo]::InvariantCulture) -ge 2.21) { ' xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"' } else { '' }
+$mxlPal = if ((Get-FormatVersionRank $mxlTemplateVersion) -ge 221) { ' xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"' } else { '' }
 X "<document xmlns=`"http://v8.1c.ru/8.2/data/spreadsheet`"$mxlPal xmlns:style=`"http://v8.1c.ru/8.1/data/ui/style`" xmlns:v8=`"http://v8.1c.ru/8.1/data/core`" xmlns:v8ui=`"http://v8.1c.ru/8.1/data/ui`" xmlns:xs=`"http://www.w3.org/2001/XMLSchema`" xmlns:xsi=`"http://www.w3.org/2001/XMLSchema-instance`">"
 
 # 7b. Language settings
+# Состав языков берется из описания: у макета их бывает несколько, и порядок значим.
+$languageList = @()
+if ($def.languages) {
+	foreach ($lang in @($def.languages)) {
+		if ($lang -is [string]) {
+			$languageList += @{ id = "$lang"; code = "$lang"; description = "$lang" }
+		} else {
+			$languageList += @{
+				id = "$($lang.id)"
+				code = if ($lang.code) { "$($lang.code)" } else { "$($lang.id)" }
+				description = if ($lang.description) { "$($lang.description)" } else { "$($lang.id)" }
+			}
+		}
+	}
+}
+if ($languageList.Count -eq 0) {
+	$languageList = @(@{ id = "ru"; code = "Русский"; description = "Русский" })
+}
+$currentLanguage = if ($def.currentLanguage) { "$($def.currentLanguage)" } else { $languageList[0].id }
+$defaultLanguage = if ($def.defaultLanguage) { "$($def.defaultLanguage)" } else { $languageList[0].id }
+
 X "`t<languageSettings>"
-X "`t`t<currentLanguage>ru</currentLanguage>"
-X "`t`t<defaultLanguage>ru</defaultLanguage>"
-X "`t`t<languageInfo>"
-X "`t`t`t<id>ru</id>"
-X "`t`t`t<code>Русский</code>"
-X "`t`t`t<description>Русский</description>"
-X "`t`t</languageInfo>"
+X "`t`t<currentLanguage>$currentLanguage</currentLanguage>"
+X "`t`t<defaultLanguage>$defaultLanguage</defaultLanguage>"
+foreach ($lang in $languageList) {
+	X "`t`t<languageInfo>"
+	X "`t`t`t<id>$(Esc-Xml $lang.id)</id>"
+	X "`t`t`t<code>$(Esc-Xml $lang.code)</code>"
+	X "`t`t`t<description>$(Esc-Xml $lang.description)</description>"
+	X "`t`t</languageInfo>"
+}
 X "`t</languageSettings>"
 
 # 7c. Columns
@@ -565,19 +868,43 @@ foreach ($col in ($colFormatMap.Keys | Sort-Object)) {
 
 X "`t</columns>"
 
+# Раскладки наборов идут отдельными блоками колонок, отличаясь идентификатором.
+foreach ($setName in $columnSets.Keys) {
+	$set = $columnSets[$setName]
+	X "`t<columns>"
+	X "`t`t<id>$($set.Id)</id>"
+	X "`t`t<size>$($set.Columns)</size>"
+	$map = $setFormatMaps[$setName]
+	foreach ($col in ($map.Keys | Sort-Object)) {
+		X "`t`t<columnsItem>"
+		X "`t`t`t<index>$($col - 1)</index>"
+		X "`t`t`t<column>"
+		X "`t`t`t`t<formatIndex>$($map[$col])</formatIndex>"
+		X "`t`t`t</column>"
+		X "`t`t</columnsItem>"
+	}
+	X "`t</columns>"
+}
+
 # 7d. Rows — main generation loop
 $globalRow = 0
 $merges = @()
 $namedItems = @()
 $totalRowCount = 0
 
-foreach ($area in $def.areas) {
+foreach ($area in $sheetAreas) {
 	$areaStartRow = $globalRow
 	$areaName = $area.name
+	$areaColumnSet = Resolve-ColumnSetName $area.columnSet $areaName
 	$activeRowspans = @()  # @{ColStart=1-based; ColEnd=1-based; EndLocalRow=int}
 	$localRow = 0
 
 	foreach ($row in $area.rows) {
+		$rowColumnSet = if ($null -ne $row.columnSet) { Resolve-ColumnSetName $row.columnSet $areaName } else { $areaColumnSet }
+		# Ширина строки берется из выбранного набора колонок: у набора она своя, и
+		# проверять колонки строки по раскладке документа нельзя.
+		$rowColumns = if ($rowColumnSet) { [int]$columnSets[$rowColumnSet].Columns } else { $totalColumns }
+
 		# Empty row placeholder: emit N empty rows
 		if ($row.empty) {
 			$count = [int]$row.empty
@@ -585,6 +912,7 @@ foreach ($area in $def.areas) {
 				X "`t<rowsItem>"
 				X "`t`t<index>$globalRow</index>"
 				X "`t`t<row>"
+				if ($rowColumnSet) { X "`t`t`t<columnsID>$($columnSets[$rowColumnSet].Id)</columnsID>" }
 				X "`t`t`t<empty>true</empty>"
 				X "`t`t</row>"
 				X "`t</rowsItem>"
@@ -608,8 +936,8 @@ foreach ($area in $def.areas) {
 
 		# Determine row height format
 		$rowFormatIdx = 0
-		if ($row.height) {
-			$hKey = Get-FormatKey -height ([int]$row.height)
+		if ($row.height -or $row.hidden -eq $true -or $row.style) {
+			$hKey = (Get-RowFormat $row).Key
 			# Find format index for this key
 			$rIdx = 0
 			foreach ($k in $formatRegistry.Keys) {
@@ -630,7 +958,7 @@ foreach ($area in $def.areas) {
 				if ($null -eq $cell.col -or "$($cell.col)" -eq "") { continue }
 				$withCol++
 				$colNum = 0
-				if (-not [int]::TryParse("$($cell.col)", [ref]$colNum) -or $colNum -lt 1 -or $colNum -gt $totalColumns) {
+				if (-not [int]::TryParse("$($cell.col)", [ref]$colNum) -or $colNum -lt 1 -or $colNum -gt $rowColumns) {
 					[Console]::Error.WriteLine("Invalid 'col' value `"$($cell.col)`": area `"$areaName`", row $($localRow + 1), cell $cellNo")
 					exit 1
 				}
@@ -659,8 +987,8 @@ foreach ($area in $def.areas) {
 				# Свободным должен быть ВЕСЬ диапазон объединения: иначе ячейка с span
 				# начиналась в свободной колонке и накрывала занятую соседнюю.
 				while (@($cursor..($cursor + $sp - 1)) | Where-Object { $claimed[$_] }) { $cursor++ }
-				if (($cursor + $sp - 1) -gt $totalColumns) {
-					[Console]::Error.WriteLine("Row exceeds 'columns' ($totalColumns): area `"$areaName`", row $($localRow + 1)")
+				if (($cursor + $sp - 1) -gt $rowColumns) {
+					[Console]::Error.WriteLine("Row exceeds 'columns' ($rowColumns): area `"$areaName`", row $($localRow + 1)")
 					exit 1
 				}
 				$cell | Add-Member -NotePropertyName col -NotePropertyValue $cursor -Force
@@ -719,7 +1047,7 @@ foreach ($area in $def.areas) {
 			# Generate gap-fill cells for rowStyle
 			if ($row.rowStyle) {
 				$gapFmtIdx = Register-CellFormat -styleName $row.rowStyle -fillType ""
-				for ($c = 1; $c -le $totalColumns; $c++) {
+				for ($c = 1; $c -le $rowColumns; $c++) {
 					if (-not $occupiedCols.ContainsKey($c)) {
 						$rowCells += @{
 							Col       = $c - 1  # 0-based
@@ -740,7 +1068,7 @@ foreach ($area in $def.areas) {
 			# Row with only rowStyle, no explicit cells — fill non-rowspan columns
 			$rowHasContent = $true
 			$gapFmtIdx = Register-CellFormat -styleName $row.rowStyle -fillType ""
-			for ($c = 1; $c -le $totalColumns; $c++) {
+			for ($c = 1; $c -le $rowColumns; $c++) {
 				if ($rowspanOccupied.ContainsKey($c)) { continue }
 				$rowCells += @{
 					Col       = $c - 1
@@ -758,6 +1086,8 @@ foreach ($area in $def.areas) {
 		X "`t`t<index>$globalRow</index>"
 		X "`t`t<row>"
 
+		if ($rowColumnSet) { X "`t`t`t<columnsID>$($columnSets[$rowColumnSet].Id)</columnsID>" }
+
 		if ($rowFormatIdx -gt 0) {
 			X "`t`t`t<formatIndex>$rowFormatIdx</formatIndex>"
 		}
@@ -765,9 +1095,15 @@ foreach ($area in $def.areas) {
 		if (-not $rowHasContent) {
 			X "`t`t`t<empty>true</empty>"
 		} else {
+			# Индекс колонки платформа пишет только при разрыве: ячейки, идущие подряд от
+			# начала строки, нумеруются по порядку следования.
+			$expectedCol = 0
 			foreach ($cellInfo in $rowCells) {
 				X "`t`t`t<c>"
-				X "`t`t`t`t<i>$($cellInfo.Col)</i>"
+				if ($cellInfo.Col -ne $expectedCol) {
+					X "`t`t`t`t<i>$($cellInfo.Col)</i>"
+				}
+				$expectedCol = [int]$cellInfo.Col + 1
 				X "`t`t`t`t<c>"
 				X "`t`t`t`t`t<f>$($cellInfo.FormatIdx)</f>"
 
@@ -780,19 +1116,23 @@ foreach ($area in $def.areas) {
 
 				if ($cellInfo.Text) {
 					X "`t`t`t`t`t<tl>"
-					X "`t`t`t`t`t`t<v8:item>"
-					X "`t`t`t`t`t`t`t<v8:lang>ru</v8:lang>"
-					X "`t`t`t`t`t`t`t<v8:content>$(Esc-Xml $cellInfo.Text)</v8:content>"
-					X "`t`t`t`t`t`t</v8:item>"
+					foreach ($ti in (Get-TextItems $cellInfo.Text)) {
+						X "`t`t`t`t`t`t<v8:item>"
+						X "`t`t`t`t`t`t`t<v8:lang>$($ti.Lang)</v8:lang>"
+						X "`t`t`t`t`t`t`t<v8:content>$(Esc-Xml $ti.Content)</v8:content>"
+						X "`t`t`t`t`t`t</v8:item>"
+					}
 					X "`t`t`t`t`t</tl>"
 				}
 
 				if ($cellInfo.Template) {
 					X "`t`t`t`t`t<tl>"
-					X "`t`t`t`t`t`t<v8:item>"
-					X "`t`t`t`t`t`t`t<v8:lang>ru</v8:lang>"
-					X "`t`t`t`t`t`t`t<v8:content>$(Esc-Xml $cellInfo.Template)</v8:content>"
-					X "`t`t`t`t`t`t</v8:item>"
+					foreach ($ti in (Get-TextItems $cellInfo.Template)) {
+						X "`t`t`t`t`t`t<v8:item>"
+						X "`t`t`t`t`t`t`t<v8:lang>$($ti.Lang)</v8:lang>"
+						X "`t`t`t`t`t`t`t<v8:content>$(Esc-Xml $ti.Content)</v8:content>"
+						X "`t`t`t`t`t`t</v8:item>"
+					}
 					X "`t`t`t`t`t</tl>"
 				}
 
@@ -809,10 +1149,40 @@ foreach ($area in $def.areas) {
 	}
 
 	$areaEndRow = $globalRow - 1
+	# Безымянная область - это строки самого документа: именованной области у них нет.
+	if ($areaName) {
+		$namedItems += @{
+			Name        = $areaName
+			Type        = "Rows"
+			BeginRow    = $areaStartRow
+			EndRow      = $areaEndRow
+			BeginColumn = -1
+			EndColumn   = -1
+		}
+	}
+}
+
+# Именованная область задается и координатами: вид выводится из того, какие оси заданы.
+$naIndex = 0
+foreach ($na in @($def.namedAreas | Where-Object { $null -ne $_ })) {
+	$naIndex++
+	$naName = "$($na.name)"
+	$hasRows = $null -ne $na.rows -and "$($na.rows)" -ne ""
+	$hasCols = $null -ne $na.cols -and "$($na.cols)" -ne ""
+	if (-not $hasRows -and -not $hasCols) {
+		[Console]::Error.WriteLine("namedAreas: at least one of 'rows'/'cols' is required: namedAreas[$naIndex] `"$naName`"")
+		exit 1
+	}
+	$rowRange = if ($hasRows) { Get-NamedAreaRange -value $na.rows -axis "rows" -index $naIndex -name $naName } else { $null }
+	$colRange = if ($hasCols) { Get-NamedAreaRange -value $na.cols -axis "cols" -index $naIndex -name $naName } else { $null }
+	$naType = if ($rowRange -and $colRange) { "Rectangle" } elseif ($rowRange) { "Rows" } else { "Columns" }
 	$namedItems += @{
-		Name     = $areaName
-		BeginRow = $areaStartRow
-		EndRow   = $areaEndRow
+		Name        = $naName
+		Type        = $naType
+		BeginRow    = if ($rowRange) { $rowRange.Begin - 1 } else { -1 }
+		EndRow      = if ($rowRange) { $rowRange.End - 1 } else { -1 }
+		BeginColumn = if ($colRange) { $colRange.Begin - 1 } else { -1 }
+		EndColumn   = if ($colRange) { $colRange.End - 1 } else { -1 }
 	}
 }
 
@@ -837,13 +1207,13 @@ foreach ($m in $merges) {
 # 7g. Named items
 foreach ($ni in $namedItems) {
 	X "`t<namedItem xsi:type=`"NamedItemCells`">"
-	X "`t`t<name>$($ni.Name)</name>"
+	X "`t`t<name>$(Esc-Xml $ni.Name)</name>"
 	X "`t`t<area>"
-	X "`t`t`t<type>Rows</type>"
+	X "`t`t`t<type>$($ni.Type)</type>"
 	X "`t`t`t<beginRow>$($ni.BeginRow)</beginRow>"
 	X "`t`t`t<endRow>$($ni.EndRow)</endRow>"
-	X "`t`t`t<beginColumn>-1</beginColumn>"
-	X "`t`t`t<endColumn>-1</endColumn>"
+	X "`t`t`t<beginColumn>$($ni.BeginColumn)</beginColumn>"
+	X "`t`t`t<endColumn>$($ni.EndColumn)</endColumn>"
 	X "`t`t</area>"
 	X "`t</namedItem>"
 }
@@ -862,6 +1232,17 @@ if ($hasThickBorders) {
 
 # 7i. Font palette
 foreach ($fe in $fontEntries) {
+	if ($fe.Ref) {
+		# Объявление пространства имен идет первым атрибутом - так пишет платформа.
+		$nsAttr = ""
+		if ($fe.Namespace) {
+			foreach ($np in $fe.Namespace.PSObject.Properties) {
+				$nsAttr += " xmlns:$($np.Name)=`"$(Esc-Xml "$($np.Value)")`""
+			}
+		}
+		X "`t<font$nsAttr ref=`"$(Esc-Xml $fe.Ref)`" kind=`"$($fe.Kind)`"/>"
+		continue
+	}
 	X "`t<font faceName=`"$($fe.Face)`" height=`"$($fe.Size)`" bold=`"$($fe.Bold)`" italic=`"$($fe.Italic)`" underline=`"$($fe.Underline)`" strikeout=`"$($fe.Strikeout)`" kind=`"Absolute`" scale=`"100`"/>"
 }
 
@@ -870,19 +1251,31 @@ foreach ($key in $formatRegistry.Keys) {
 	$fmt = $formatRegistry[$key]
 	X "`t<format>"
 
+	if ($fmt.Hidden -eq $true) {
+		X "`t`t<hidden>true</hidden>"
+	}
 	if ($fmt.FontIdx -ne $null -and $fmt.FontIdx -ge 0) {
 		X "`t`t<font>$($fmt.FontIdx)</font>"
 	}
-	if ($fmt.LB -ne $null -and $fmt.LB -ge 0) {
+	if ($fmt.TextColor) {
+		X "`t`t<textColor>$(Esc-Xml $fmt.TextColor)</textColor>"
+	}
+	# Рамка со всех сторон одной линией пишется одним тегом - так делает платформа.
+	$sameBorder = ($fmt.LB -ne $null -and $fmt.LB -ge 0 -and
+		$fmt.LB -eq $fmt.TB -and $fmt.LB -eq $fmt.RB -and $fmt.LB -eq $fmt.BB)
+	if ($sameBorder) {
+		X "`t`t<border>$($fmt.LB)</border>"
+	}
+	if (-not $sameBorder -and $fmt.LB -ne $null -and $fmt.LB -ge 0) {
 		X "`t`t<leftBorder>$($fmt.LB)</leftBorder>"
 	}
-	if ($fmt.TB -ne $null -and $fmt.TB -ge 0) {
+	if (-not $sameBorder -and $fmt.TB -ne $null -and $fmt.TB -ge 0) {
 		X "`t`t<topBorder>$($fmt.TB)</topBorder>"
 	}
-	if ($fmt.RB -ne $null -and $fmt.RB -ge 0) {
+	if (-not $sameBorder -and $fmt.RB -ne $null -and $fmt.RB -ge 0) {
 		X "`t`t<rightBorder>$($fmt.RB)</rightBorder>"
 	}
-	if ($fmt.BB -ne $null -and $fmt.BB -ge 0) {
+	if (-not $sameBorder -and $fmt.BB -ne $null -and $fmt.BB -ge 0) {
 		X "`t`t<bottomBorder>$($fmt.BB)</bottomBorder>"
 	}
 	if ($fmt.Width) {
@@ -925,6 +1318,10 @@ $resolvedPath = if ([System.IO.Path]::IsPathRooted($OutputPath)) { $OutputPath }
 Assert-EditAllowed $resolvedPath "editable"
 # Платформа не оставляет перевод строки после закрывающего тега - лишний перевод
 # дает расхождение в первой же сверке с выгрузкой Конфигуратора.
+$outDir = [System.IO.Path]::GetDirectoryName($resolvedPath)
+if ($outDir -and -not (Test-Path $outDir)) {
+	New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+}
 [System.IO.File]::WriteAllText($resolvedPath, $xml.ToString().TrimEnd("`r", "`n"), $enc)
 
 # --- 9. Summary ---

@@ -225,6 +225,7 @@ NSMAP_WRAPPER = {
 # ============================================================
 
 xml_tree = None   # etree._ElementTree
+format_rank = 0.0
 xml_root = None   # root <MetaDataObject>
 obj_element = None  # the object type element (e.g. <Catalog>)
 obj_type = ""
@@ -344,7 +345,7 @@ valid_enum_values = {
     'RegisterRecordsDeletion': ['AutoDelete', 'AutoDeleteOnUnpost', 'AutoDeleteOff'],
     'RegisterRecordsWritingOnPost': ['WriteModified', 'WriteSelected', 'WriteAll'],
     'ReturnValuesReuse': ['DontUse', 'DuringRequest', 'DuringSession'],
-    'ReuseSessions': ['DontUse', 'AutoUse'],
+    'ReuseSessions': ['DontUse', 'Use', 'AutoUse'],
     'FillChecking': ['DontCheck', 'ShowError', 'ShowWarning'],
     'Indexing': ['DontIndex', 'Index', 'IndexWithAdditionalOrder'],
 }
@@ -401,25 +402,24 @@ def find_typo_candidate(name, candidates):
 # Стандартные реквизиты платформы по типу объекта: реквизит с таким именем она отвергает при
 # загрузке. Набор зависит от типа - "Тип" стандартен у плана видов характеристик и плана
 # счетов, а у справочника такого реквизита нет и имя законно.
-STANDARD_ATTRIBUTES_COMMON = [
-    "Ref", "Ссылка", "DeletionMark", "ПометкаУдаления", "Predefined", "Предопределенный",
-    "PredefinedDataName", "ИмяПредопределенныхДанных",
-]
-
-STANDARD_ATTRIBUTES_BY_TYPE = {
-    "Catalog": ["Code", "Код", "Description", "Наименование", "Parent", "Родитель", "Owner", "Владелец", "IsFolder", "ЭтоГруппа"],
-    "Document": ["Date", "Дата", "Number", "Номер", "Posted", "Проведен"],
-    "ChartOfCharacteristicTypes": ["Code", "Код", "Description", "Наименование", "Parent", "Родитель", "IsFolder", "ЭтоГруппа", "Type", "Тип", "ValueType", "ТипЗначения"],
-    "ChartOfAccounts": ["Code", "Код", "Description", "Наименование", "Type", "Тип", "OffBalance", "Забалансовый", "Order", "Порядок"],
-    "ChartOfCalculationTypes": ["Code", "Код", "Description", "Наименование", "ActionPeriodIsBasic", "БазовыйПериодЯвляетсяОсновным"],
-    "BusinessProcess": ["Date", "Дата", "Number", "Номер", "Started", "Стартован", "Completed", "Завершен", "HeadTask", "ВедущаяЗадача"],
-    "Task": ["Date", "Дата", "Number", "Номер", "Description", "Наименование", "Executed", "Выполнена", "RoutePoint", "ТочкаМаршрута", "BusinessProcess", "БизнесПроцесс"],
-    "ExchangePlan": ["Code", "Код", "Description", "Наименование", "ThisNode", "ЭтотУзел", "SentNo", "НомерОтправленного", "ReceivedNo", "НомерПринятого"],
-    "InformationRegister": ["Period", "Период", "Recorder", "Регистратор", "Active", "Активность"],
+# Имена стандартных реквизитов по типу объекта, обе формы записи. Набор совпадает с составом,
+# который выпускает meta-compile: имени вне этого набора платформа не запрещает, и общего
+# для всех типов списка нет - у обработки нет Ссылки, у документа нет Предопределенного.
+RESERVED_ATTRIBUTES_BY_TYPE = {
+    "Catalog": ["PredefinedDataName", "ИмяПредопределенныхДанных", "Predefined", "Предопределенный", "Ref", "Ссылка", "DeletionMark", "ПометкаУдаления", "IsFolder", "ЭтоГруппа", "Owner", "Владелец", "Parent", "Родитель", "Description", "Наименование", "Code", "Код"],
+    "Document": ["Ref", "Ссылка", "DeletionMark", "ПометкаУдаления", "Date", "Дата", "Number", "Номер", "Posted", "Проведен"],
+    "Enum": ["Ref", "Ссылка", "Order", "Порядок"],
+    "InformationRegister": ["Period", "Период", "Recorder", "Регистратор", "LineNumber", "НомерСтроки", "Active", "Активность"],
     "AccumulationRegister": ["Period", "Период", "Recorder", "Регистратор", "LineNumber", "НомерСтроки", "Active", "Активность"],
     "AccountingRegister": ["Period", "Период", "Recorder", "Регистратор", "LineNumber", "НомерСтроки", "Active", "Активность", "Account", "Счет"],
-    "CalculationRegister": ["RegistrationPeriod", "ПериодРегистрации", "CalculationType", "ВидРасчета", "Recorder", "Регистратор", "LineNumber", "НомерСтроки", "Active", "Активность", "ReversingEntry", "СторноЗапись"],
-    # У табличной части стандартный реквизит один - номер строки.
+    "CalculationRegister": ["Recorder", "Регистратор", "LineNumber", "НомерСтроки", "Active", "Активность", "RegistrationPeriod", "ПериодРегистрации", "CalculationType", "ВидРасчета", "ReversingEntry", "СторноЗапись"],
+    "ChartOfAccounts": ["PredefinedDataName", "ИмяПредопределенныхДанных", "Predefined", "Предопределенный", "Ref", "Ссылка", "DeletionMark", "ПометкаУдаления", "Description", "Наименование", "Code", "Код", "Parent", "Родитель", "Order", "Порядок", "Type", "Тип", "OffBalance", "Забалансовый"],
+    "ChartOfCharacteristicTypes": ["PredefinedDataName", "ИмяПредопределенныхДанных", "Predefined", "Предопределенный", "Ref", "Ссылка", "DeletionMark", "ПометкаУдаления", "Description", "Наименование", "Code", "Код", "Parent", "Родитель", "IsFolder", "ЭтоГруппа", "ValueType", "ТипЗначения"],
+    "ChartOfCalculationTypes": ["PredefinedDataName", "ИмяПредопределенныхДанных", "Predefined", "Предопределенный", "Ref", "Ссылка", "DeletionMark", "ПометкаУдаления", "Description", "Наименование", "Code", "Код", "ActionPeriodIsBasic", "БазовыйПериодЯвляетсяОсновным"],
+    "BusinessProcess": ["Ref", "Ссылка", "DeletionMark", "ПометкаУдаления", "Date", "Дата", "Number", "Номер", "Started", "Стартован", "Completed", "Завершен", "HeadTask", "ВедущаяЗадача"],
+    "Task": ["Ref", "Ссылка", "DeletionMark", "ПометкаУдаления", "Date", "Дата", "Number", "Номер", "Description", "Наименование", "Executed", "Выполнена", "RoutePoint", "ТочкаМаршрута", "BusinessProcess", "БизнесПроцесс"],
+    "ExchangePlan": ["Ref", "Ссылка", "DeletionMark", "ПометкаУдаления", "Code", "Код", "Description", "Наименование", "ThisNode", "ЭтотУзел", "SentNo", "НомерОтправленного", "ReceivedNo", "НомерПринятого"],
+    "DocumentJournal": ["Ref", "Ссылка", "Type", "Тип", "Date", "Дата", "Number", "Номер", "Posted", "Проведен", "DeletionMark", "ПометкаУдаления"],
     "TabularSection": ["LineNumber", "НомерСтроки"],
 }
 
@@ -428,12 +428,7 @@ def assert_attribute_name_allowed(name, owner_type):
     if not name:
         return
     normalized = name.replace('\u0451', '\u0435').replace('\u0401', '\u0415')
-    if owner_type == "TabularSection":
-        forbidden = STANDARD_ATTRIBUTES_BY_TYPE["TabularSection"]
-    else:
-        forbidden = list(STANDARD_ATTRIBUTES_COMMON)
-        forbidden += STANDARD_ATTRIBUTES_BY_TYPE.get(owner_type, [])
-    for standard in forbidden:
+    for standard in RESERVED_ATTRIBUTES_BY_TYPE.get(owner_type, []):
         if standard.lower() == normalized.lower():
             print(f"Имя '{name}' зарезервировано стандартным реквизитом платформы "
                   f"у типа '{owner_type}'", file=sys.stderr)
@@ -471,7 +466,9 @@ def split_camel_case(name):
     # Insert space between lowercase Latin and uppercase Latin
     result = re.sub(r"([a-z])([A-Z])", r"\1 \2", result)
     if len(result) > 1:
-        result = result[0] + result[1:].lower()
+        tail = re.sub(r'(?<![А-ЯЁA-Z])([А-ЯЁA-Z])(?![А-ЯЁA-Z])',
+                      lambda m: m.group(1).lower(), result[1:])
+        result = result[0] + tail
     return result
 
 
@@ -538,6 +535,11 @@ type_synonyms = {
 def resolve_type_str(type_str):
     if not type_str:
         return type_str
+    # Срезается только префикс выгрузки конфигурации: схемные префиксы (v8:, xs:, v8ui:)
+    # часть имени типа, и без них тип не разрешается.
+    m_prefix = re.match(r'^(?:cfg|d\d+p\d+):(.+)$', type_str)
+    if m_prefix:
+        type_str = m_prefix.group(1)
 
     # Parameterized: Number(15,2), Строка(100)
     m = re.match(r"^([^(]+)\((.+)\)$", type_str)
@@ -1529,6 +1531,9 @@ def build_enum_value_fragment(parsed, indent):
     lines.append(f"{indent}\t\t<Name>{esc_xml(parsed['name'])}</Name>")
     lines.append(build_mltext_xml(f"{indent}\t\t", "Synonym", parsed["synonym"]))
     lines.append(f"{indent}\t\t<Comment/>")
+    # Цвет значения перечисления появился в формате 2.21 (8.5); auto означает выбор платформы.
+    if format_rank >= 221:
+        lines.append(f"{indent}\t\t<Color>auto</Color>")
     lines.append(f"{indent}\t</Properties>")
     lines.append(f"{indent}</EnumValue>")
     return "\r\n".join(lines)
@@ -2666,6 +2671,22 @@ def save_xml(tree, path):
 # Main
 # ============================================================
 
+def format_version_rank(version):
+    """Версии сравниваются по составным частям: 2.9 старее, чем 2.21, хотя как число больше."""
+    m = re.match(r"^(\d+)\.(\d+)$", str(version or ""))
+    return int(m.group(1)) * 100 + int(m.group(2)) if m else 0
+
+
+def sibling_skill_script(name, script_name):
+    """Скрипт соседнего навыка. Каталог навыка назван с префиксом 1c-, без него пути нет."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    for folder in ('1c-' + name, name):
+        candidate = os.path.normpath(os.path.join(base, '..', '..', folder, 'scripts', script_name))
+        if os.path.isfile(candidate):
+            return candidate
+    return ''
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
@@ -2742,6 +2763,12 @@ def main():
     xml_parser = etree.XMLParser(remove_blank_text=False)
     xml_tree = etree.parse(resolved_path, xml_parser)
     xml_root = xml_tree.getroot()
+
+    # Версию формата задает шапка правимого файла: часть свойств есть только с определенной версии.
+    global format_rank
+    version_attr = xml_root.get("version", "2.17")
+    m_version = re.match(r"^(\d+\.\d+)", version_attr)
+    format_rank = format_version_rank(m_version.group(1)) if m_version else 0
 
     # --- Detect object type ---
     if localname(xml_root) != "MetaDataObject":
@@ -2821,8 +2848,8 @@ def main():
     # --- Auto-validate ---
     if not args.NoValidate:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        validate_script = os.path.normpath(os.path.join(script_dir, "..", "..", "meta-validate", "scripts", "meta-validate.py"))
-        if os.path.exists(validate_script):
+        validate_script = sibling_skill_script('meta-validate', 'meta-validate.py')
+        if validate_script:
             print()
             print("--- Running meta-validate ---")
             python_exe = sys.executable

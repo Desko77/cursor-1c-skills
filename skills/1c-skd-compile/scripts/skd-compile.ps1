@@ -187,7 +187,13 @@ function X {
 
 function Esc-Xml {
 	param([string]$s)
-	return $s.Replace('&','&amp;').Replace('<','&lt;').Replace('>','&gt;').Replace('"','&quot;')
+	return $s.Replace('&','&amp;').Replace('<','&lt;').Replace('>','&gt;')
+}
+
+# Значение атрибута: сверх содержимого экранируется кавычка.
+function Esc-Attr {
+	param([string]$s)
+	return (Esc-Xml $s).Replace('"','&quot;')
 }
 
 function Resolve-QueryValue {
@@ -292,6 +298,11 @@ $script:typeSynonyms["планвидовхарактеристикссылка"]
 function Resolve-TypeStr {
 	param([string]$typeStr)
 	if (-not $typeStr) { return $typeStr }
+	# Тип, скопированный из выгрузки, несет префикс пространства имен: cfg:, d5p1:, d4p1:.
+	# В описании он лишний - имя типа платформа читает без него.
+	# Срезается только префикс выгрузки конфигурации: схемные префиксы (v8:, xs:, v8ui:)
+	# часть имени типа, и без них тип не разрешается.
+	if ($typeStr -match '^(?:cfg|d\d+p\d+):(.+)$') { $typeStr = $Matches[1] }
 
 	# Check for parameterized types: число(15,2), строка(100), etc.
 	if ($typeStr -match '^([^(]+)\((.+)\)$') {
@@ -322,10 +333,33 @@ function Resolve-TypeStr {
 	return $typeStr
 }
 
+# Тип значения и его текст: платформа пишет тип явным атрибутом xsi:type.
+function Get-DesignTimeValue($value) {
+	if ($value -is [bool]) {
+		$flag = if ($value) { 'true' } else { 'false' }
+		return @{ type = 'xs:boolean'; text = $flag }
+	}
+	if ($value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [decimal]) {
+		return @{ type = 'xs:decimal'; text = (Esc-Xml "$value") }
+	}
+	$text = "$value"
+	if ($text -match '^(Перечисление|Справочник|ПланСчетов|Документ|ПланВидовХарактеристик|ПланВидовРасчета)\.') {
+		return @{ type = 'dcscor:DesignTimeValue'; text = (Esc-Xml $text) }
+	}
+	return @{ type = 'xs:string'; text = (Esc-Xml $text) }
+}
+
 function Emit-ValueType {
-	param([string]$typeStr, [string]$indent)
+	param($typeStr, [string]$indent)
 
 	if (-not $typeStr) { return }
+
+	# Составной тип - список: у каждого типа свой элемент, склеивать их в один нельзя.
+	if ($typeStr -isnot [string] -and $typeStr -is [System.Collections.IEnumerable]) {
+		foreach ($one in $typeStr) { Emit-ValueType -typeStr $one -indent $indent }
+		return
+	}
+	$typeStr = [string]$typeStr
 
 	# Resolve synonyms first
 	$typeStr = Resolve-TypeStr $typeStr
@@ -337,20 +371,21 @@ function Emit-ValueType {
 	}
 
 	# string or string(N)
-	if ($typeStr -match '^string(\((\d+)\))?$') {
+	if ($typeStr -match '^string(\((\d+)(,fix)?\))?$') {
 		$len = if ($Matches[2]) { $Matches[2] } else { "0" }
+		$allowed = if ($Matches[3]) { "Fixed" } else { "Variable" }
 		X "$indent<v8:Type>xs:string</v8:Type>"
 		X "$indent<v8:StringQualifiers>"
 		X "$indent`t<v8:Length>$len</v8:Length>"
-		X "$indent`t<v8:AllowedLength>Variable</v8:AllowedLength>"
+		X "$indent`t<v8:AllowedLength>$allowed</v8:AllowedLength>"
 		X "$indent</v8:StringQualifiers>"
 		return
 	}
 
 	# decimal(D,F) or decimal(D,F,nonneg)
-	if ($typeStr -match '^decimal\((\d+),(\d+)(,nonneg)?\)$') {
+	if ($typeStr -match '^decimal\((\d+)(?:,(\d+))?(,nonneg)?\)$') {
 		$digits = $Matches[1]
-		$fraction = $Matches[2]
+		$fraction = if ($Matches[2]) { $Matches[2] } else { "0" }
 		$sign = if ($Matches[3]) { "Nonnegative" } else { "Any" }
 		X "$indent<v8:Type>xs:decimal</v8:Type>"
 		X "$indent<v8:NumberQualifiers>"
@@ -405,6 +440,14 @@ function Parse-FieldShorthand {
 		dataPath = ""; field = ""; title = ""; type = ""
 		roles = @(); restrict = @(); appearance = [ordered]@{}
 	}
+
+	# Признак роли может нести значение: @balance balanceGroupName=Сумма.
+	$kvMatches = [regex]::Matches($s, '(\w+)=([^\s]+)')
+	foreach ($m in $kvMatches) {
+		if (-not $result.Contains('roleExtra')) { $result['roleExtra'] = [ordered]@{} }
+		$result['roleExtra'][$m.Groups[1].Value] = $m.Groups[2].Value
+	}
+	$s = [regex]::Replace($s, '\s*\w+=[^\s]+', '')
 
 	# Extract @roles
 	$roleMatches = [regex]::Matches($s, '@(\w+)')
@@ -741,7 +784,7 @@ function Emit-Field {
 			dataPath = if ($fieldDef.dataPath) { "$($fieldDef.dataPath)" } elseif ($fieldDef.field) { "$($fieldDef.field)" } else { "" }
 			field = if ($fieldDef.field) { "$($fieldDef.field)" } else { "$($fieldDef.dataPath)" }
 			title = if ($fieldDef.title) { $fieldDef.title } else { "" }
-			type = if ($fieldDef.type) { Resolve-TypeStr "$($fieldDef.type)" } else { "" }
+			type = if ($fieldDef.type -is [array]) { $fieldDef.type } elseif ($fieldDef.type) { Resolve-TypeStr "$($fieldDef.type)" } else { "" }
 			roles = @()
 			restrict = @()
 			appearance = [ordered]@{}
@@ -762,10 +805,17 @@ function Emit-Field {
 		if ($fieldDef.restrict) {
 			$f.restrict = @($fieldDef.restrict)
 		}
+		# Параметры ввода поля переносятся как есть: их состав задан платформой.
+		if ($fieldDef.inputParameters) { $f.inputParameters = @($fieldDef.inputParameters) }
 		# Parse appearance
 		if ($fieldDef.appearance) {
 			foreach ($prop in $fieldDef.appearance.PSObject.Properties) {
-				$f.appearance[$prop.Name] = "$($prop.Value)"
+				# Значение сохраняется как есть: многоязычное приходит объектом.
+				if ($prop.Value -is [PSCustomObject]) {
+					$f.appearance[$prop.Name] = $prop.Value
+				} else {
+					$f.appearance[$prop.Name] = "$($prop.Value)"
+				}
 			}
 		}
 		if ($fieldDef.presentationExpression) {
@@ -779,6 +829,15 @@ function Emit-Field {
 		if ($fieldDef.role -and $fieldDef.role -isnot [string]) {
 			$f["roleObj"] = $fieldDef.role
 		}
+	}
+
+	# Поле-папка группирует поля по общему пути и своего значения не имеет.
+	if ($fieldDef.folder -eq $true) {
+		X "$indent<field xsi:type=`"DataSetFieldFolder`">"
+		X "$indent`t<dataPath>$(Esc-Xml $f.dataPath)</dataPath>"
+		if ($f.title) { Emit-MLText -tag "title" -text $f.title -indent "$indent`t" }
+		X "$indent</field>"
+		return
 	}
 
 	X "$indent<field xsi:type=`"DataSetFieldField`">"
@@ -819,7 +878,7 @@ function Emit-Field {
 	}
 
 	# Role
-	if ($f.roles.Count -gt 0 -or $f["roleObj"]) {
+	if ($f.roles.Count -gt 0 -or $f["roleObj"] -or $f["roleExtra"]) {
 		X "$indent`t<role>"
 		foreach ($role in $f.roles) {
 			if ($role -eq "period") {
@@ -830,16 +889,32 @@ function Emit-Field {
 				X "$indent`t`t<dcscom:$role>true</dcscom:$role>"
 			}
 		}
+		# Признак роли со значением пишется своим тегом рядом с самой ролью.
+		$roleExtra = [ordered]@{}
 		if ($f["roleObj"]) {
-			$ro = $f["roleObj"]
-			if ($ro.accountTypeExpression) {
-				X "$indent`t`t<dcscom:accountTypeExpression>$(Esc-Xml "$($ro.accountTypeExpression)")</dcscom:accountTypeExpression>"
-			}
-			if ($ro.balanceGroup) {
-				X "$indent`t`t<dcscom:balanceGroup>$(Esc-Xml "$($ro.balanceGroup)")</dcscom:balanceGroup>"
-			}
+			foreach ($prop in $f["roleObj"].PSObject.Properties) { $roleExtra[$prop.Name] = $prop.Value }
+		}
+		if ($f["roleExtra"]) {
+			foreach ($k in $f["roleExtra"].Keys) { $roleExtra[$k] = $f["roleExtra"][$k] }
+		}
+		foreach ($entry in $roleExtra.GetEnumerator()) {
+			$ev = $entry.Value
+			if ($ev -is [bool] -or $null -eq $ev) { continue }
+			X "$indent`t`t<dcscom:$($entry.Key)>$(Esc-Xml "$ev")</dcscom:$($entry.Key)>"
 		}
 		X "$indent`t</role>"
+	}
+
+	# Сортировка по выражению: у поля свой порядок, отличный от порядка по значению.
+	$orderExpr = $fieldDef.orderExpression
+	if ($orderExpr) {
+		X "$indent`t<orderExpression>"
+		X "$indent`t`t<dcscom:expression>$(Esc-Xml "$($orderExpr.expression)")</dcscom:expression>"
+		$orderType = if ($orderExpr.orderType) { "$($orderExpr.orderType)" } else { 'Asc' }
+		X "$indent`t`t<dcscom:orderType>$(Esc-Xml $orderType)</dcscom:orderType>"
+		$autoOrder = if ($orderExpr.autoOrder -eq $true) { 'true' } else { 'false' }
+		X "$indent`t`t<dcscom:autoOrder>$autoOrder</dcscom:autoOrder>"
+		X "$indent`t</orderExpression>"
 	}
 
 	# ValueType
@@ -848,20 +923,62 @@ function Emit-Field {
 		Emit-ValueType -typeStr $f.type -indent "$indent`t`t"
 		X "$indent`t</valueType>"
 	}
+	# Параметры ввода поля: параметры выбора, связи параметров выбора и простое
+	# типизированное значение. Платформа пишет значение с явным типом, а не отдельными
+	# элементами; признак использования идет ПЕРЕД именем параметра.
+	if ($f.inputParameters) {
+		X "$indent`t<inputParameters>"
+		foreach ($ip in $f.inputParameters) {
+			X "$indent`t`t<dcscor:item>"
+			if ($ip.PSObject.Properties['use'] -and $ip.use -eq $false) {
+				X "$indent`t`t`t<dcscor:use>false</dcscor:use>"
+			}
+			X "$indent`t`t`t<dcscor:parameter>$(Esc-Xml "$($ip.parameter)")</dcscor:parameter>"
+			if ($ip.PSObject.Properties['choiceParameters']) {
+				$cps = @($ip.choiceParameters)
+				if ($cps.Count -eq 0 -or $null -eq $cps[0]) {
+					X "$indent`t`t`t<dcscor:value xsi:type=`"dcscor:ChoiceParameters`"/>"
+				} else {
+					X "$indent`t`t`t<dcscor:value xsi:type=`"dcscor:ChoiceParameters`">"
+					foreach ($cp in $cps) {
+						X "$indent`t`t`t`t<dcscor:item>"
+						X "$indent`t`t`t`t`t<dcscor:choiceParameter>$(Esc-Xml "$($cp.name)")</dcscor:choiceParameter>"
+						foreach ($value in @($cp.values)) {
+							if ($null -eq $value) { continue }
+							X "$indent`t`t`t`t`t<dcscor:value xsi:type=`"dcscor:DesignTimeValue`">$(Esc-Xml "$value")</dcscor:value>"
+						}
+						X "$indent`t`t`t`t</dcscor:item>"
+					}
+					X "$indent`t`t`t</dcscor:value>"
+				}
+			} elseif ($ip.PSObject.Properties['choiceParameterLinks']) {
+				X "$indent`t`t`t<dcscor:value xsi:type=`"dcscor:ChoiceParameterLinks`">"
+				foreach ($link in @($ip.choiceParameterLinks)) {
+					X "$indent`t`t`t`t<dcscor:item>"
+					X "$indent`t`t`t`t`t<dcscor:choiceParameter>$(Esc-Xml "$($link.name)")</dcscor:choiceParameter>"
+					X "$indent`t`t`t`t`t<dcscor:value>$(Esc-Xml "$($link.value)")</dcscor:value>"
+					$mode = if ($link.mode) { "$($link.mode)" } else { 'Clear' }
+					X "$indent`t`t`t`t`t<dcscor:mode xmlns:d8p1=`"http://v8.1c.ru/8.1/data/enterprise`" xsi:type=`"d8p1:LinkedValueChangeMode`">$(Esc-Xml $mode)</dcscor:mode>"
+					X "$indent`t`t`t`t</dcscor:item>"
+				}
+				X "$indent`t`t`t</dcscor:value>"
+			} elseif ($ip.PSObject.Properties['value']) {
+				$dtv = Get-DesignTimeValue $ip.value
+				X "$indent`t`t`t<dcscor:value xsi:type=`"$($dtv.type)`">$($dtv.text)</dcscor:value>"
+			}
+			X "$indent`t`t</dcscor:item>"
+		}
+		X "$indent`t</inputParameters>"
+	}
+
 
 	# Appearance
 	if ($f.appearance -and $f.appearance.Count -gt 0) {
 		X "$indent`t<appearance>"
 		foreach ($key in $f.appearance.Keys) {
 			$val = $f.appearance[$key]
-			X "$indent`t`t<dcscor:item xsi:type=`"dcsset:SettingsParameterValue`">"
-			X "$indent`t`t`t<dcscor:parameter>$(Esc-Xml $key)</dcscor:parameter>"
-			if ($key -eq "ГоризонтальноеПоложение") {
-				X "$indent`t`t`t<dcscor:value xsi:type=`"v8ui:HorizontalAlign`">$(Esc-Xml $val)</dcscor:value>"
-			} else {
-				X "$indent`t`t`t<dcscor:value xsi:type=`"xs:string`">$(Esc-Xml $val)</dcscor:value>"
-			}
-			X "$indent`t`t</dcscor:item>"
+			# Оформление поля пишется тем же кодом, что и условное: значение бывает многоязычным.
+			Emit-AppearanceValue -key $key -val $val -indent "$indent`t`t"
 		}
 		X "$indent`t</appearance>"
 	}
@@ -876,7 +993,7 @@ function Emit-Field {
 
 # === DataSets ===
 function Emit-DataSet {
-	param($ds, [string]$indent)
+	param($ds, [string]$indent, [switch]$AsUnionItem)
 
 	# Determine type
 	if ($ds.items) {
@@ -887,7 +1004,9 @@ function Emit-DataSet {
 		$dsType = "DataSetQuery"
 	}
 
-	X "$indent<dataSet xsi:type=`"$dsType`">"
+	# Вложенный набор объединения платформа выгружает тегом item.
+	$dsTag = if ($AsUnionItem) { "item" } else { "dataSet" }
+	X "$indent<$dsTag xsi:type=`"$dsType`">"
 	X "$indent`t<name>$(Esc-Xml "$($ds.name)")</name>"
 
 	# Fields
@@ -915,11 +1034,11 @@ function Emit-DataSet {
 	} elseif ($dsType -eq "DataSetUnion") {
 		foreach ($item in $ds.items) {
 			# Union items are nested dataSets
-			Emit-DataSet -ds $item -indent "$indent`t" | Out-Null
+			Emit-DataSet -ds $item -indent "$indent`t" -AsUnionItem | Out-Null
 		}
 	}
 
-	X "$indent</dataSet>"
+	X "$indent</$dsTag>"
 }
 
 function Emit-DataSets {
@@ -1097,7 +1216,13 @@ function Emit-SingleParam {
 	}
 
 	# Value
-	Emit-ParamValue -type $parsed.type -val $parsed.value -indent "`t`t"
+	if ($null -eq $parsed.value) {
+		if (-not $parsed.valueListAllowed) {
+			Emit-EmptyParamValue -type $parsed.type -indent "`t`t"
+		}
+	} else {
+		Emit-ParamValue -type $parsed.type -val $parsed.value -indent "`t`t" -autoDates:([bool]$parsed.autoDates)
+	}
 
 	# Hidden implies useRestriction=true + availableAsField=false
 	if ($parsed.hidden -eq $true) {
@@ -1105,10 +1230,10 @@ function Emit-SingleParam {
 		$parsed.useRestriction = $true
 	}
 
-	# UseRestriction
-	if ($parsed.useRestriction -eq $true -or ($p -isnot [string] -and $p.useRestriction -eq $true)) {
-		X "`t`t<useRestriction>true</useRestriction>"
-	}
+	# Признак ограничения пишется у каждого параметра, а не только когда он включен.
+	$restrict = ($parsed.useRestriction -eq $true -or ($p -isnot [string] -and $p.useRestriction -eq $true))
+	$restrictText = if ($restrict) { 'true' } else { 'false' }
+	X "`t`t<useRestriction>$restrictText</useRestriction>"
 
 	# Expression
 	if ($parsed.expression) {
@@ -1200,21 +1325,21 @@ function Emit-Parameters {
 		Emit-SingleParam -p $p -parsed $parsed
 
 		# Track parameter for auto dataParameters
-		$script:allParams += @{ name = $parsed.name; hidden = [bool]$parsed.hidden; type = "$($parsed.type)"; value = $parsed.value }
+		$script:allParams += @{ name = $parsed.name; hidden = [bool]$parsed.hidden; type = "$($parsed.type)"; value = $parsed.value; autoDates = [bool]$parsed.autoDates }
 
 		# @autoDates: auto-generate НачалоПериода and КонецПериода (canonical БСП pattern)
 		if ($parsed.autoDates) {
 			$paramName = $parsed.name
 			$beginParsed = @{
 				name = "НачалоПериода"; title = "Начало периода"
-				type = "date"; value = "0001-01-01T00:00:00"
+				type = "dateTime"; value = "0001-01-01T00:00:00"
 				useRestriction = $true
 				expression = "&$paramName.ДатаНачала"
 			}
 			Emit-SingleParam -p $null -parsed $beginParsed
 			$endParsed = @{
 				name = "КонецПериода"; title = "Конец периода"
-				type = "date"; value = "0001-01-01T00:00:00"
+				type = "dateTime"; value = "0001-01-01T00:00:00"
 				useRestriction = $true
 				expression = "&$paramName.ДатаОкончания"
 			}
@@ -1223,20 +1348,31 @@ function Emit-Parameters {
 	}
 }
 
+# Параметр без значения: ссылочный тип и тип без указания дают nil, строка - пустой элемент.
+function Emit-EmptyParamValue {
+	param([string]$type, [string]$indent)
+	if (-not $type -or $type -match '^[A-Za-z]+Ref\.') {
+		X "$indent<value xsi:nil=`"true`"/>"
+	} elseif ($type -match '^string') {
+		X "$indent<value xsi:type=`"xs:string`"/>"
+	}
+}
+
 function Emit-ParamValue {
-	param([string]$type, $val, [string]$indent)
+	param([string]$type, $val, [string]$indent, [switch]$autoDates)
 
 	if ($null -eq $val) { return }
 
 	$valStr = "$val"
 
 	if ($type -eq "StandardPeriod") {
-		# val is a period variant string like "LastMonth" or "Custom".
-		# Always emit startDate/endDate to match how 1C Designer saves the schema.
+		# Границы периода пишутся, только когда их не считает сам вариант периода.
 		X "$indent<value xsi:type=`"v8:StandardPeriod`">"
 		X "$indent`t<v8:variant xsi:type=`"v8:StandardPeriodVariant`">$(Esc-Xml $valStr)</v8:variant>"
-		X "$indent`t<v8:startDate>0001-01-01T00:00:00</v8:startDate>"
-		X "$indent`t<v8:endDate>0001-01-01T00:00:00</v8:endDate>"
+		if (-not $autoDates) {
+			X "$indent`t<v8:startDate>0001-01-01T00:00:00</v8:startDate>"
+			X "$indent`t<v8:endDate>0001-01-01T00:00:00</v8:endDate>"
+		}
 		X "$indent</value>"
 	} elseif ($type -match '^date') {
 		X "$indent<value xsi:type=`"xs:dateTime`">$(Esc-Xml $valStr)</value>"
@@ -1287,6 +1423,13 @@ $script:areaStylePresets = @{
 		hAlign = $null; vAlign = $null; wrap = $false
 		bgColor = $null; textColor = $null
 		borderColor = 'style:ReportLineColor'; borders = $true
+	}
+	# Оформления нет вовсе: у ячейки остается только ширина.
+	none = @{
+		font = $null; fontSize = $null; bold = $false; italic = $false
+		hAlign = $null; vAlign = $null; wrap = $false
+		bgColor = $null; textColor = $null
+		borderColor = $null; borders = $false
 	}
 }
 
@@ -1344,8 +1487,9 @@ function Emit-ColorValue {
 
 function Emit-CellAppearance {
 	param($style, [double]$width = 0, [bool]$vMerge = $false, [bool]$hMerge = $false, [double]$minHeight = 0, $extraItems = @())
-	$ind = "`t`t`t`t`t"
-	X "`t`t`t`t<dcsat:appearance>"
+	# Оформление - такой же дочерний элемент ячейки, как и item рядом с ним.
+	$ind = "`t`t`t`t`t`t"
+	X "`t`t`t`t`t<dcsat:appearance>"
 	# Background color
 	if ($style.bgColor) {
 		X "$ind<dcscor:item>"
@@ -1386,10 +1530,12 @@ function Emit-CellAppearance {
 	# Font
 	$boldStr = if ($style.bold) { "true" } else { "false" }
 	$italicStr = if ($style.italic) { "true" } else { "false" }
-	X "$ind<dcscor:item>"
-	X "$ind`t<dcscor:parameter>Шрифт</dcscor:parameter>"
-	X "$ind`t<dcscor:value xsi:type=`"v8ui:Font`" faceName=`"$($style.font)`" height=`"$($style.fontSize)`" bold=`"$boldStr`" italic=`"$italicStr`" underline=`"false`" strikeout=`"false`" kind=`"Absolute`" scale=`"100`"/>"
-	X "$ind</dcscor:item>"
+	if ($style.font) {
+		X "$ind<dcscor:item>"
+		X "$ind`t<dcscor:parameter>Шрифт</dcscor:parameter>"
+		X "$ind`t<dcscor:value xsi:type=`"v8ui:Font`" faceName=`"$($style.font)`" height=`"$($style.fontSize)`" bold=`"$boldStr`" italic=`"$italicStr`" underline=`"false`" strikeout=`"false`" kind=`"Absolute`" scale=`"100`"/>"
+		X "$ind</dcscor:item>"
+	}
 	# Horizontal alignment
 	if ($style.hAlign) {
 		X "$ind<dcscor:item>"
@@ -1445,7 +1591,7 @@ function Emit-CellAppearance {
 	}
 	# Extra appearance items (e.g. drilldown Расшифровка)
 	foreach ($ei in $extraItems) { X $ei }
-	X "`t`t`t`t</dcsat:appearance>"
+	X "`t`t`t`t`t</dcsat:appearance>"
 }
 
 function Emit-AreaTemplateDSL {
@@ -1457,7 +1603,26 @@ function Emit-AreaTemplateDSL {
 	}
 	$style = $script:areaStylePresets[$styleName]
 
-	$rows = @($t.rows)
+	# Ячейка со своим стилем разворачивается до всего прочего: маркеры объединения у нее
+	# такие же, как у строковой, и карты объединения должны их видеть.
+	$cellStyles = @{}
+	$rows = New-Object System.Collections.Generic.List[object]
+	$rI = 0
+	foreach ($srcRow in @($t.rows)) {
+		$row = New-Object System.Collections.Generic.List[object]
+		$cI = 0
+		foreach ($cell in @($srcRow)) {
+			if ($null -ne $cell -and $cell -isnot [string] -and $cell.PSObject.Properties['value']) {
+				if ($cell.style) { $cellStyles["$rI,$cI"] = "$($cell.style)" }
+				[void]$row.Add($cell.value)
+			} else {
+				[void]$row.Add($cell)
+			}
+			$cI += 1
+		}
+		[void]$rows.Add($row)
+		$rI += 1
+	}
 	$widths = if ($t.widths) { @($t.widths) } else { @() }
 	$minHeight = if ($t.minHeight) { [double]$t.minHeight } else { 0 }
 	$colCount = if ($widths.Count -gt 0) { $widths.Count } else { $rows[0].Count }
@@ -1506,13 +1671,22 @@ function Emit-AreaTemplateDSL {
 			$w = if ($c -lt $widths.Count) { [double]$widths[$c] } else { 0 }
 			$isVMerged = $vMerge[$r][$c] -eq $true
 			$isHMerged = $hMerge[$r][$c] -eq $true
+			# Ячейка задается строкой либо объектом со своим стилем: тогда оформление
+			# берется от нее, а не от макета. Объединенная ячейка тоже несет свое.
+			$cellStyle = $style
+			if ($cellStyles.ContainsKey("$r,$c")) {
+				$cellStyleName = $cellStyles["$r,$c"]
+				if (-not $script:areaStylePresets.ContainsKey($cellStyleName)) {
+					[Console]::Error.WriteLine("Warning: Unknown area style preset '$cellStyleName', falling back to '$styleName'")
+					$cellStyleName = $styleName
+				}
+				$cellStyle = $script:areaStylePresets[$cellStyleName]
+			}
 			X "`t`t`t`t<dcsat:tableCell>"
 			if ($isVMerged) {
-				# Vertically merged cell — only appearance with vMerge flag + width
-				Emit-CellAppearance $style $w $true
+				Emit-CellAppearance $cellStyle $w $true
 			} elseif ($isHMerged) {
-				# Horizontally merged cell — only appearance with hMerge flag + width
-				Emit-CellAppearance $style $w $false $true
+				Emit-CellAppearance $cellStyle $w $false $true
 			} else {
 				# Cell value
 				if ($null -ne $cellVal -and $cellVal -ne '') {
@@ -1530,10 +1704,10 @@ function Emit-AreaTemplateDSL {
 						$cellExtraItems = @()
 						if ($drilldownMap.ContainsKey($paramName)) {
 							$ddVal = $drilldownMap[$paramName]
-							$cellExtraItems += "`t`t`t`t`t<dcscor:item>"
-							$cellExtraItems += "`t`t`t`t`t`t<dcscor:parameter>Расшифровка</dcscor:parameter>"
-							$cellExtraItems += "`t`t`t`t`t`t<dcscor:value xsi:type=`"dcscor:Parameter`">Расшифровка_$ddVal</dcscor:value>"
-							$cellExtraItems += "`t`t`t`t`t</dcscor:item>"
+							$cellExtraItems += "`t`t`t`t`t`t<dcscor:item>"
+							$cellExtraItems += "`t`t`t`t`t`t`t<dcscor:parameter>Расшифровка</dcscor:parameter>"
+							$cellExtraItems += "`t`t`t`t`t`t`t<dcscor:value xsi:type=`"dcscor:Parameter`">Расшифровка_$ddVal</dcscor:value>"
+							$cellExtraItems += "`t`t`t`t`t`t</dcscor:item>"
 						}
 					} else {
 						# Static text
@@ -1550,7 +1724,7 @@ function Emit-AreaTemplateDSL {
 				# Appearance
 				$h = if ($r -eq 0) { $minHeight } else { 0 }
 				if (-not $cellExtraItems) { $cellExtraItems = @() }
-				Emit-CellAppearance $style $w $false $false $h $cellExtraItems
+				Emit-CellAppearance $cellStyle $w $false $false $h $cellExtraItems
 				$cellExtraItems = @()
 			}
 			X "`t`t`t`t</dcsat:tableCell>"
@@ -1650,7 +1824,25 @@ function Emit-Selection {
 
 	if (-not $items -or $items.Count -eq 0) { return }
 
-	X "$indent<dcsset:selection>"
+	# Отбор пишется в свой буфер: если после пропуска автополей не осталось ни одного
+	# элемента, блок выгружается одним тегом, а не пустой парой.
+	$outerXml = $script:xml
+	$script:xml = New-Object System.Text.StringBuilder 1024
+	Emit-SelectionItems $items $indent -skipAuto:$skipAuto
+	$inner = $script:xml.ToString()
+	$script:xml = $outerXml
+	if ($inner.Trim()) {
+		X "$indent<dcsset:selection>"
+		$script:xml.Append($inner) | Out-Null
+		X "$indent</dcsset:selection>"
+	} else {
+		X "$indent<dcsset:selection/>"
+	}
+}
+
+# Элементы выборки собираются отдельно: папка зовет эту же сборку для своего содержимого.
+function Emit-SelectionItems {
+	param($items, [string]$indent, [switch]$skipAuto)
 	foreach ($item in $items) {
 		if ($item -is [string]) {
 			if ($item -eq "Auto") {
@@ -1670,12 +1862,7 @@ function Emit-Selection {
 			X "$indent`t`t`t`t<v8:content>$(Esc-Xml "$($item.folder)")</v8:content>"
 			X "$indent`t`t`t</v8:item>"
 			X "$indent`t`t</dcsset:lwsTitle>"
-			foreach ($sub in $item.items) {
-				$subName = if ($sub -is [string]) { $sub } else { "$($sub.field)" }
-				X "$indent`t`t<dcsset:item xsi:type=`"dcsset:SelectedItemField`">"
-				X "$indent`t`t`t<dcsset:field>$(Esc-Xml $subName)</dcsset:field>"
-				X "$indent`t`t</dcsset:item>"
-			}
+			Emit-SelectionItems $item.items "$indent`t" -skipAuto:$skipAuto
 			X "$indent`t`t<dcsset:placement>Auto</dcsset:placement>"
 			X "$indent`t</dcsset:item>"
 		} else {
@@ -1692,7 +1879,6 @@ function Emit-Selection {
 			X "$indent`t</dcsset:item>"
 		}
 	}
-	X "$indent</dcsset:selection>"
 }
 
 function Emit-FilterItem {
@@ -1866,8 +2052,27 @@ function Emit-AppearanceValue {
 		$actualVal = "$val"
 	}
 
+	# Значение оформления бывает многоязычным: объект "язык: текст" вместо строки.
+	$mlValue = $null
+	$rawValue = if ($val -is [PSCustomObject] -and $null -ne $val.use) { $val.value } else { $val }
+	if ($rawValue -is [PSCustomObject] -and $null -eq $rawValue.use) { $mlValue = $rawValue }
+	if ($null -ne $mlValue) {
+		X "$indent`t<dcscor:value xsi:type=`"v8:LocalStringType`">"
+		foreach ($prop in $mlValue.PSObject.Properties) {
+			X "$indent`t`t<v8:item>"
+			X "$indent`t`t`t<v8:lang>$(Esc-Xml $prop.Name)</v8:lang>"
+			X "$indent`t`t`t<v8:content>$(Esc-Xml "$($prop.Value)")</v8:content>"
+			X "$indent`t`t</v8:item>"
+		}
+		X "$indent`t</dcscor:value>"
+		X "$indent</dcscor:item>"
+		return
+	}
+
 	# Auto-detect value type
-	if ($actualVal -match '^(style|web|win):') {
+	if ($key -eq "ГоризонтальноеПоложение") {
+		X "$indent`t<dcscor:value xsi:type=`"v8ui:HorizontalAlign`">$(Esc-Xml $actualVal)</dcscor:value>"
+	} elseif ($actualVal -match '^(style|web|win):') {
 		X "$indent`t<dcscor:value xsi:type=`"v8ui:Color`">$(Esc-Xml $actualVal)</dcscor:value>"
 	} elseif ($actualVal -eq "true" -or $actualVal -eq "false") {
 		X "$indent`t<dcscor:value xsi:type=`"xs:boolean`">$actualVal</dcscor:value>"
@@ -1878,6 +2083,9 @@ function Emit-AppearanceValue {
 		X "$indent`t`t`t<v8:content>$(Esc-Xml $actualVal)</v8:content>"
 		X "$indent`t`t</v8:item>"
 		X "$indent`t</dcscor:value>"
+	} elseif ($actualVal -match '^-?\d+(\.\d+)?$') {
+		# Числовое свойство оформления (ширина, высота, отступ) пишется числом.
+		X "$indent`t<dcscor:value xsi:type=`"xs:decimal`">$actualVal</dcscor:value>"
 	} else {
 		X "$indent`t<dcscor:value xsi:type=`"xs:string`">$(Esc-Xml $actualVal)</dcscor:value>"
 	}
@@ -1907,8 +2115,11 @@ function Emit-ConditionalAppearance {
 		}
 
 		# Filter (reuse existing Emit-Filter logic)
+		# Отбор пишется всегда: без него платформа не читает элемент оформления.
 		if ($ca.filter) {
 			Emit-Filter -items $ca.filter -indent "$indent`t`t"
+		} else {
+			X "$indent`t`t<dcsset:filter/>"
 		}
 
 		# Appearance (parameter-value pairs)
@@ -2014,15 +2225,19 @@ function Emit-DataParameters {
 				# StandardPeriod (object form from JSON)
 				X "$indent`t`t<dcscor:value xsi:type=`"v8:StandardPeriod`">"
 				X "$indent`t`t`t<v8:variant xsi:type=`"v8:StandardPeriodVariant`">$(Esc-Xml "$($dp.value.variant)")</v8:variant>"
-				X "$indent`t`t`t<v8:startDate>0001-01-01T00:00:00</v8:startDate>"
-				X "$indent`t`t`t<v8:endDate>0001-01-01T00:00:00</v8:endDate>"
+				if (-not $dp.autoDates) {
+					X "$indent`t`t`t<v8:startDate>0001-01-01T00:00:00</v8:startDate>"
+					X "$indent`t`t`t<v8:endDate>0001-01-01T00:00:00</v8:endDate>"
+				}
 				X "$indent`t`t</dcscor:value>"
 			} elseif ($dp.value -is [hashtable] -and $dp.value.variant) {
 				# StandardPeriod (hashtable from shorthand parser)
 				X "$indent`t`t<dcscor:value xsi:type=`"v8:StandardPeriod`">"
 				X "$indent`t`t`t<v8:variant xsi:type=`"v8:StandardPeriodVariant`">$(Esc-Xml "$($dp.value.variant)")</v8:variant>"
-				X "$indent`t`t`t<v8:startDate>0001-01-01T00:00:00</v8:startDate>"
-				X "$indent`t`t`t<v8:endDate>0001-01-01T00:00:00</v8:endDate>"
+				if (-not $dp.autoDates) {
+					X "$indent`t`t`t<v8:startDate>0001-01-01T00:00:00</v8:startDate>"
+					X "$indent`t`t`t<v8:endDate>0001-01-01T00:00:00</v8:endDate>"
+				}
 				X "$indent`t`t</dcscor:value>"
 			} elseif ($vtype -eq 'boolean' -or $dp.value -is [bool]) {
 				$bv = "$($dp.value)".ToLower()
@@ -2073,6 +2288,11 @@ function Emit-GroupItems {
 	X "$indent<dcsset:groupItems>"
 	foreach ($field in $groupBy) {
 		if ($field -is [string]) {
+			# Auto - автоматическая группировка, у нее нет ни поля, ни вида.
+			if ($field -ceq 'Auto') {
+				X "$indent`t<dcsset:item xsi:type=`"dcsset:GroupItemAuto`"/>"
+				continue
+			}
 			X "$indent`t<dcsset:item xsi:type=`"dcsset:GroupItemField`">"
 			X "$indent`t`t<dcsset:field>$(Esc-Xml $field)</dcsset:field>"
 			X "$indent`t`t<dcsset:groupType>Items</dcsset:groupType>"
@@ -2169,6 +2389,19 @@ function Emit-StructureItem {
 			}
 		}
 
+		X "$indent</dcsset:item>"
+	}
+	elseif ($type -eq "nestedObject") {
+		# Вложенный объект: своя выборка поверх набора данных, названного objectID.
+		X "$indent<dcsset:item xsi:type=`"dcsset:StructureItemNestedObject`">"
+		X "$indent`t<dcsset:objectID>$(Esc-Xml "$($item.objectID)")</dcsset:objectID>"
+		$nested = $item.settings
+		X "$indent`t<dcsset:settings>"
+		Emit-Selection -items $nested.selection -indent "$indent`t`t"
+		if ($nested.order) { Emit-Order -items $nested.order -indent "$indent`t`t" }
+		Emit-Filter -items $nested.filter -indent "$indent`t`t"
+		if ($nested.outputParameters) { Emit-OutputParameters -params $nested.outputParameters -indent "$indent`t`t" }
+		X "$indent`t</dcsset:settings>"
 		X "$indent</dcsset:item>"
 	}
 	elseif ($type -eq "table") {
@@ -2298,9 +2531,9 @@ function Emit-SettingsVariants {
 
 		$s = $v.settings
 
-		# Selection (Auto items only belong at group level, not top-level settings)
+		# Автополе выбора платформа пишет и на верхнем уровне настроек, и в группе.
 		if ($s.selection) {
-			Emit-Selection -items $s.selection -indent "`t`t`t" -skipAuto
+			Emit-Selection -items $s.selection -indent "`t`t`t"
 		}
 
 		# Filter
@@ -2310,7 +2543,7 @@ function Emit-SettingsVariants {
 
 		# Order (Auto items only belong at group level, not top-level settings)
 		if ($s.order) {
-			Emit-Order -items $s.order -indent "`t`t`t" -skipAuto
+			Emit-Order -items $s.order -indent "`t`t`t"
 		}
 
 		# ConditionalAppearance
@@ -2321,6 +2554,16 @@ function Emit-SettingsVariants {
 		# OutputParameters
 		if ($s.outputParameters) {
 			Emit-OutputParameters -params $s.outputParameters -indent "`t`t`t"
+		}
+
+		if ($s.additionalProperties) {
+			X "`t`t`t<dcsset:additionalProperties>"
+			foreach ($prop in $s.additionalProperties.PSObject.Properties) {
+				X "`t`t`t`t<v8:Property name=`"$(Esc-Attr $prop.Name)`">"
+				X "`t`t`t`t`t<v8:Value xsi:type=`"xs:string`">$(Esc-Xml "$($prop.Value)")</v8:Value>"
+				X "`t`t`t`t</v8:Property>"
+			}
+			X "`t`t`t</dcsset:additionalProperties>"
 		}
 
 		# DataParameters
@@ -2350,6 +2593,7 @@ function Emit-SettingsVariants {
 						}
 					}
 					$dpItem | Add-Member -NotePropertyName "value" -NotePropertyValue @{ variant = $variant }
+					if ($ap.autoDates) { $dpItem | Add-Member -NotePropertyName "autoDates" -NotePropertyValue $true }
 					if ($variant -ne 'Custom') { $hasMeaningfulValue = $true }
 				} elseif ($null -ne $ap.value -and "$($ap.value)" -ne '') {
 					$dpItem | Add-Member -NotePropertyName "value" -NotePropertyValue $ap.value
@@ -2391,14 +2635,8 @@ function Emit-SettingsVariants {
 # --- 12. Assemble XML ---
 
 X "<?xml version=`"1.0`" encoding=`"UTF-8`"?>"
-X "<DataCompositionSchema xmlns=`"http://v8.1c.ru/8.1/data-composition-system/schema`""
-X "`t`txmlns:dcscom=`"http://v8.1c.ru/8.1/data-composition-system/common`""
-X "`t`txmlns:dcscor=`"http://v8.1c.ru/8.1/data-composition-system/core`""
-X "`t`txmlns:dcsset=`"http://v8.1c.ru/8.1/data-composition-system/settings`""
-X "`t`txmlns:v8=`"http://v8.1c.ru/8.1/data/core`""
-X "`t`txmlns:v8ui=`"http://v8.1c.ru/8.1/data/ui`""
-X "`t`txmlns:xs=`"http://www.w3.org/2001/XMLSchema`""
-X "`t`txmlns:xsi=`"http://www.w3.org/2001/XMLSchema-instance`">"
+# Платформа пишет шапку схемы одной строкой.
+X '<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcscom="http://v8.1c.ru/8.1/data-composition-system/common" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
 
 Emit-DataSources
 Emit-DataSets
@@ -2419,7 +2657,8 @@ if ($parentDir -and -not (Test-Path $parentDir)) {
 	New-Item -ItemType Directory -Force $parentDir | Out-Null
 }
 
-$content = $script:xml.ToString()
+# Платформа не оставляет перевод строки после закрывающего тега.
+$content = $script:xml.ToString().TrimEnd("`r", "`n")
 $utf8Bom = New-Object System.Text.UTF8Encoding $true
 [System.IO.File]::WriteAllText($OutputPath, $content, $utf8Bom)
 

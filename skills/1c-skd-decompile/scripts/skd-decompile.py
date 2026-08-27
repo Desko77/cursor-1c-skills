@@ -91,8 +91,9 @@ def ml_text(elem, todo_node):
     langs = {}
     for it in items:
         langs[text_of(kid(it, 'lang')).strip()] = text_of(kid(it, 'content'))
-    if len(langs) > 1 and todo_node is not None:
-        add_todo(todo_node, 'многоязычный текст: сохранен только ru')
+    # Многоязычный текст возвращается объектом "язык: текст": одноязычный - строкой.
+    if len(langs) > 1:
+        return langs
     if 'ru' in langs:
         return langs['ru']
     for v in langs.values():
@@ -128,10 +129,13 @@ def type_shorthand(vt_elem, node):
     if not types:
         return None
     if len(types) > 1:
-        names = ', '.join((text_of(t) or '').strip() for t in types)
-        add_todo(node, 'составной тип не поддержан: ' + names)
-        return None
-    raw = (text_of(types[0]) or '').strip()
+        # Составной тип - список: каждый его тип разбирается тем же кодом, что и одиночный.
+        return [decode_one_type(one, vt_elem, node) for one in types]
+    return decode_one_type(types[0], vt_elem, node)
+
+
+def decode_one_type(type_el, vt_elem, node):
+    raw = (text_of(type_el) or '').strip()
     uri, loc = resolve_qname_uri(raw)
     if uri == URI_CFG:
         return loc
@@ -147,20 +151,23 @@ def type_shorthand(vt_elem, node):
         if q is None:
             return 'string'
         length = text_of(kid(q, 'Length')).strip() or '0'
+        # Фиксированная длина записывается признаком fix рядом с самой длиной.
         allowed = text_of(kid(q, 'AllowedLength')).strip()
-        if allowed and allowed != 'Variable':
-            add_todo(node, 'StringQualifiers AllowedLength=' + allowed + ' не поддержан (принят Variable)')
-        return 'string' if length == '0' else 'string(' + length + ')'
+        if length == '0':
+            return 'string'
+        return 'string(' + length + (',fix)' if allowed == 'Fixed' else ')')
     if loc == 'decimal':
         q = kid(vt_elem, 'NumberQualifiers')
         if q is None:
             return raw
         digits = text_of(kid(q, 'Digits')).strip() or '0'
         frac = text_of(kid(q, 'FractionDigits')).strip() or '0'
+        # Нулевая дробная часть - умолчание, в запись она не идет.
         sign = text_of(kid(q, 'AllowedSign')).strip()
+        parts = digits if frac == '0' else digits + ',' + frac
         if sign == 'Nonnegative':
-            return 'decimal(' + digits + ',' + frac + ',nonneg)'
-        return 'decimal(' + digits + ',' + frac + ')'
+            return 'decimal(' + parts + ',nonneg)'
+        return 'decimal(' + parts + ')'
     if loc == 'dateTime':
         q = kid(vt_elem, 'DateQualifiers')
         frac = text_of(kid(q, 'DateFractions')).strip() if q is not None else 'DateTime'
@@ -171,6 +178,60 @@ def type_shorthand(vt_elem, node):
         add_todo(node, 'DateQualifiers DateFractions=' + frac + ' не поддержан')
         return 'dateTime'
     return raw
+
+
+def input_parameters_of(fel):
+    """Параметры ввода поля: параметры выбора, связи параметров выбора и простое значение."""
+    ip_el = kid(fel, 'inputParameters')
+    if ip_el is None:
+        return []
+    items = []
+    for item in ip_el:
+        if local(item.tag) != 'item':
+            continue
+        # Имя параметра идет первым ключом: в файле признак использования стоит раньше,
+        # но в описании читается имя, а не служебный флаг.
+        entry = {'parameter': text_of(kid(item, 'parameter')) or ''}
+        use_el = kid(item, 'use')
+        if use_el is not None and (text_of(use_el) or '').strip() == 'false':
+            entry['use'] = False
+        value_el = kid(item, 'value')
+        if value_el is None:
+            items.append(entry)
+            continue
+        xsi_type = (value_el.get('{http://www.w3.org/2001/XMLSchema-instance}type') or '')
+        kind = xsi_type.split(':')[-1]
+        if kind == 'ChoiceParameters':
+            params = []
+            for sub in value_el:
+                if local(sub.tag) != 'item':
+                    continue
+                params.append({
+                    'name': text_of(kid(sub, 'choiceParameter')) or '',
+                    'values': [text_of(v) or '' for v in sub if local(v.tag) == 'value'],
+                })
+            entry['choiceParameters'] = params
+        elif kind == 'ChoiceParameterLinks':
+            links = []
+            for sub in value_el:
+                if local(sub.tag) != 'item':
+                    continue
+                links.append({
+                    'name': text_of(kid(sub, 'choiceParameter')) or '',
+                    'value': text_of(kid(sub, 'value')) or '',
+                    'mode': text_of(kid(sub, 'mode')) or 'Clear',
+                })
+            entry['choiceParameterLinks'] = links
+        else:
+            text = text_of(value_el) or ''
+            if kind == 'boolean':
+                entry['value'] = text.strip() == 'true'
+            elif kind == 'decimal':
+                entry['value'] = float(text) if '.' in text else int(text or 0)
+            else:
+                entry['value'] = text
+        items.append(entry)
+    return items
 
 
 def restriction_tokens(el):
@@ -220,8 +281,12 @@ def build_field(fel):
     xt = xsi_local(fel)
     node = {}
     if xt == 'DataSetFieldFolder':
-        node['dataPath'] = text_of(kid(fel, 'dataPath'))
-        add_todo(node, 'папка полей (DataSetFieldFolder) не поддержана нашим DSL')
+        # Поле-папка группирует поля по общему пути и своего значения не имеет.
+        node['field'] = text_of(kid(fel, 'dataPath'))
+        node['folder'] = True
+        t_el = kid(fel, 'title')
+        if t_el is not None:
+            node['title'] = ml_text(t_el, node)
         return node
     if xt not in ('DataSetFieldField', ''):
         add_todo(node, 'неподдержанный тип поля: ' + xt)
@@ -243,16 +308,17 @@ def build_field(fel):
         for rc in r_el:
             rl = local(rc.tag)
             rv = text_of(rc).strip()
-            if rl in ('dimension', 'account', 'balance') and rv == 'true':
+            # Признак роли либо логический (@имя), либо со значением (имя=значение).
+            if rv == 'true' and rl not in ('periodNumber', 'periodType'):
                 roles.append(rl)
             elif rl == 'periodNumber':
                 period_num = rv
             elif rl == 'periodType':
                 period_type = rv
-            elif rl in ('accountTypeExpression', 'balanceGroup'):
-                role_extra[rl] = rv
+            elif rv == 'false':
+                continue
             else:
-                add_todo(node, 'элемент роли не поддержан: ' + rl)
+                role_extra[rl] = rv
         if period_num == '1' and period_type == 'Main':
             roles.append('period')
         elif period_num or period_type:
@@ -266,8 +332,21 @@ def build_field(fel):
     appearance = build_appearance_map(app_el, node) if app_el is not None else None
     pres_expr = text_of(kid(fel, 'presentationExpression'))
 
-    handled = {'dataPath', 'field', 'title', 'role', 'useRestriction',
-               'attributeUseRestriction', 'valueType', 'appearance', 'presentationExpression'}
+    # Сортировка по выражению: у поля свой порядок, отличный от порядка по значению.
+    order_expr = None
+    oe_el = kid(fel, 'orderExpression')
+    if oe_el is not None:
+        order_expr = {'expression': text_of(kid(oe_el, 'expression')) or ''}
+        ot_el = kid(oe_el, 'orderType')
+        order_expr['orderType'] = text_of(ot_el) or 'Asc'
+        ao_el = kid(oe_el, 'autoOrder')
+        order_expr['autoOrder'] = (text_of(ao_el) or '').strip() == 'true'
+
+    input_parameters = input_parameters_of(fel)
+
+    handled = {'dataPath', 'field', 'title', 'role', 'useRestriction', 'inputParameters',
+               'attributeUseRestriction', 'valueType', 'appearance', 'presentationExpression',
+               'orderExpression'}
     for c in fel:
         ln = local(c.tag)
         if ln not in handled:
@@ -276,22 +355,29 @@ def build_field(fel):
     can_short = (
         bool(SIMPLE_NAME.match(data_path or '')) and
         (not field or field == data_path) and
-        not title and not role_extra and not attr_restrict and
+        not title and not attr_restrict and
+        all(SIMPLE_NAME.match(str(v)) for v in role_extra.values()) and
         not appearance and not pres_expr and '_todo' not in node and
-        (type_str is None or bool(SIMPLE_NAME.match(type_str)))
+        (type_str is None or (isinstance(type_str, str) and bool(SIMPLE_NAME.match(type_str))))
     )
+    # Шорткат несет только имя, тип, признаки и ограничения: сортировка по выражению и
+    # параметры ввода в него не помещаются.
+    can_short = can_short and not order_expr and not input_parameters
     if can_short:
         s = data_path
         if type_str:
             s += ': ' + type_str
         for r in roles:
             s += ' @' + r
+        for extra_key, extra_value in role_extra.items():
+            s += ' ' + extra_key + '=' + str(extra_value)
         for t in restrict:
             s += ' #' + t
         return s
 
-    obj = {'dataPath': data_path}
+    obj = {'field': data_path}
     if field and field != data_path:
+        obj['dataPath'] = data_path
         obj['field'] = field
     if title:
         obj['title'] = title
@@ -315,6 +401,10 @@ def build_field(fel):
         obj['appearance'] = appearance
     if pres_expr:
         obj['presentationExpression'] = pres_expr
+    if order_expr:
+        obj['orderExpression'] = order_expr
+    if input_parameters:
+        obj['inputParameters'] = input_parameters
     if '_todo' in node:
         obj['_todo'] = node['_todo']
     return obj
@@ -329,7 +419,13 @@ def build_data_set(el, default_source):
     if xt == 'DataSetQuery':
         if src and src != default_source:
             node['source'] = src
-        node['query'] = text_of(kid(el, 'query'))
+        query_text = text_of(kid(el, 'query'))
+        if '\n' in query_text:
+            safe_name = safe_query_file_name(str(node['name']))
+            external_queries[safe_name] = query_text
+            node['query'] = '@' + query_file_prefix[0] + '-' + safe_name + '.sql'
+        else:
+            node['query'] = query_text
         aff = kid(el, 'autoFillFields')
         if aff is not None and text_of(aff).strip() == 'false':
             node['autoFillFields'] = False
@@ -410,7 +506,7 @@ def build_calc(el):
         bool(SIMPLE_NAME.match(dp or '')) and
         expr and '\n' not in expr and not restrict_pat.search(expr) and
         (not title or not re.search(r'[\]=#@]', title)) and
-        (type_str is None or bool(SIMPLE_NAME.match(type_str)))
+        (type_str is None or (isinstance(type_str, str) and bool(SIMPLE_NAME.match(type_str))))
     )
     if can_short:
         s = dp
@@ -488,6 +584,8 @@ def build_parameter(el):
             ed = text_of(kid(v_el, 'endDate')).strip()
             if (sd and sd != ZERO_DATE) or (ed and ed != ZERO_DATE):
                 add_todo(node, 'нестандартные даты StandardPeriod потеряны: ' + sd + ' / ' + ed)
+        elif len(v_el) == 0 and not (v_el.text or '').strip():
+            pass  # Пустой типизированный элемент - это отсутствие значения, а не пустая строка.
         elif vxt == 'boolean':
             node['value'] = text_of(v_el).strip()
         else:
@@ -575,7 +673,7 @@ def param_to_shorthand(p):
     value = p.get('value')
     if not SIMPLE_NAME.match(name or ''):
         return p
-    if not type_str or not SIMPLE_NAME.match(type_str):
+    if not type_str or not isinstance(type_str, str) or not SIMPLE_NAME.match(type_str):
         return p
     if title and re.search(r'[\]@#=:]', title):
         return p
@@ -605,6 +703,8 @@ def param_to_shorthand(p):
 # === Selection / Filter / Order ===
 
 def build_selection(sel_el, todo_node):
+    # Папка выборки разбирается тем же кодом, что и сама выборка: внутри нее лежат такие же
+    # элементы, включая вложенные папки и поля с заголовком.
     items = []
     for it in kids(sel_el, 'item'):
         xt = xsi_local(it)
@@ -624,14 +724,7 @@ def build_selection(sel_el, todo_node):
         elif xt == 'SelectedItemFolder':
             t_el = kid(it, 'lwsTitle')
             folder = {'folder': ml_text(t_el, todo_node) if t_el is not None else ''}
-            sub_items = []
-            for sub in kids(it, 'item'):
-                sxt = xsi_local(sub)
-                if sxt == 'SelectedItemField':
-                    sub_items.append(text_of(kid(sub, 'field')))
-                else:
-                    add_todo(folder, 'элемент папки выборки не поддержан: ' + sxt)
-            folder['items'] = sub_items
+            folder['items'] = build_selection(it, folder)
             placement = text_of(kid(it, 'placement')).strip()
             if placement and placement != 'Auto':
                 add_todo(folder, 'размещение папки выборки не поддержано: ' + placement)
@@ -836,7 +929,9 @@ def build_conditional_appearance(ca_el, todo_node):
             node['viewMode'] = vm
         uid = text_of(kid(it, 'userSettingID')).strip()
         if uid:
-            node['userSettingID'] = uid
+            # Идентификатор пользовательской настройки создается заново при сборке,
+            # поэтому в описании остается признак, а не сам идентификатор.
+            node['userSettingID'] = 'auto' if GUID_RE.match(uid) else uid
         if text_of(kid(it, 'use')).strip() == 'false':
             add_todo(node, 'условное оформление: use=false не поддержано нашим DSL')
         scope_el = kid(it, 'scope')
@@ -871,6 +966,25 @@ PERIOD_VARIANTS = {
     'NextQuarter', 'NextHalfYear', 'NextYear', 'TillEndOfThisWeek', 'TillEndOfThisTenDays',
     'TillEndOfThisMonth', 'TillEndOfThisQuarter', 'TillEndOfThisHalfYear', 'TillEndOfThisYear',
 }
+
+
+GUID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+
+_schema_params = []
+
+
+def auto_data_parameters(items):
+    """Набор параметров данных совпадает с автоматическим, если он перечисляет все
+    видимые параметры схемы с их значениями и пользовательской настройкой."""
+    visible = [p for p in _schema_params if not p.get('hidden')]
+    if not visible or len(items) != len(visible):
+        return False
+    for item, p in zip(items, visible):
+        if p.get('value') in (None, ''):
+            return False
+        if item != p['name'] + ' = ' + str(p['value']) + ' @user':
+            return False
+    return True
 
 
 def build_data_parameters(dp_el, todo_node):
@@ -970,9 +1084,8 @@ def build_group_items(gi_el, todo_node):
             if (pab and pab != ZERO_DATE) or (pae and pae != ZERO_DATE):
                 add_todo(todo_node, 'границы добавления периода у "' + f + '" потеряны')
         elif xt == 'GroupItemAuto':
-            stub = {}
-            add_todo(stub, 'группировка Авто (GroupItemAuto) не поддержана нашим DSL')
-            fields.append(stub)
+            # Auto - автоматическая группировка, у нее нет ни поля, ни вида.
+            fields.append('Auto')
         else:
             stub = {}
             add_todo(stub, 'элемент группировки не поддержан: ' + xt)
@@ -1004,23 +1117,26 @@ def apply_structure_extras(el, node, handled):
             add_todo(node, 'элемент структуры не поддержан: ' + ln)
 
 
-def build_structure_content(el, node, with_children):
+def build_structure_content(el, node, with_children, axis_form=False):
     n_el = kid(el, 'name')
     if n_el is not None and text_of(n_el):
         node['name'] = text_of(n_el)
     gi_el = kid(el, 'groupItems')
     if gi_el is not None:
-        node['groupBy'] = build_group_items(gi_el, node)
-    ord_el = kid(el, 'order')
-    if ord_el is not None:
-        o = build_order(ord_el, node)
-        if o and o != ['Auto']:
-            node['order'] = o
+        node['groupFields'] = build_group_items(gi_el, node)
+    # Отбор и порядок пишутся всегда, включая пустые: их отсутствие в файле и автоэлемент -
+    # разные вещи, и обратная сборка обязана их различать.
     sel_el = kid(el, 'selection')
-    if sel_el is not None:
-        s = build_selection(sel_el, node)
-        if s and s != ['Auto']:
-            node['selection'] = s
+    ord_el = kid(el, 'order')
+    if axis_form:
+        # У оси таблицы отсутствие отбора и порядка значимо: сборка не должна дописывать их.
+        node['order'] = build_order(ord_el, node) if ord_el is not None else []
+        node['selection'] = build_selection(sel_el, node) if sel_el is not None else []
+    else:
+        if sel_el is not None:
+            node['selection'] = build_selection(sel_el, node)
+        if ord_el is not None:
+            node['order'] = build_order(ord_el, node)
     f_el = kid(el, 'filter')
     if f_el is not None:
         flt = build_filter(f_el, node)
@@ -1057,28 +1173,52 @@ def build_structure_item(el):
         n_el = kid(el, 'name')
         if n_el is not None and text_of(n_el):
             node['name'] = text_of(n_el)
-        rows = []
-        for r in kids(el, 'row'):
-            axis = {}
-            build_structure_content(r, axis, False)
-            rows.append(axis)
-        cols = []
-        for c in kids(el, 'column'):
-            axis = {}
-            build_structure_content(c, axis, False)
-            if 'name' in axis:
-                add_todo(axis, 'имя колонки таблицы не поддержано компилятором')
-            cols.append(axis)
-        if rows:
-            node['rows'] = rows
-        if cols:
-            node['columns'] = cols
+        # Порядок осей в описании тот же, что в файле: он значим для чтения.
+        for child in list(el):
+            tag = local(child.tag)
+            if tag == 'column':
+                axis = {}
+                build_structure_content(child, axis, False, axis_form=True)
+                if 'name' in axis:
+                    add_todo(axis, 'имя колонки таблицы не поддержано компилятором')
+                node.setdefault('columns', []).append(axis)
+            elif tag == 'row':
+                axis = {}
+                build_structure_content(child, axis, False, axis_form=True)
+                node.setdefault('rows', []).append(axis)
         handled = {'name', 'row', 'column'}
         for extra in ('selection', 'filter', 'conditionalAppearance', 'outputParameters'):
             if kid(el, extra) is not None:
                 add_todo(node, 'таблица структуры: ' + extra + ' на уровне таблицы не поддержан')
                 handled.add(extra)
         apply_structure_extras(el, node, handled)
+        return node
+    if xt == 'StructureItemNestedObject':
+        # Вложенный объект: своя выборка поверх набора данных, названного objectID.
+        node = {'type': 'nestedObject'}
+        oid_el = kid(el, 'objectID')
+        if oid_el is not None and text_of(oid_el):
+            node['objectID'] = text_of(oid_el)
+        s_el = kid(el, 'settings')
+        nested = {}
+        if s_el is not None:
+            sel_el = kid(s_el, 'selection')
+            if sel_el is not None:
+                nested['selection'] = build_selection(sel_el, node)
+            ord_el = kid(s_el, 'order')
+            if ord_el is not None:
+                nested['order'] = build_order(ord_el, node)
+            f_el = kid(s_el, 'filter')
+            if f_el is not None:
+                flt = build_filter(f_el, node)
+                if flt:
+                    nested['filter'] = flt
+            op_el = kid(s_el, 'outputParameters')
+            if op_el is not None:
+                op = build_output_params(op_el, node)
+                if op:
+                    nested['outputParameters'] = op
+        node['settings'] = nested
         return node
     if xt == 'StructureItemChart':
         node = {'type': 'chart'}
@@ -1124,9 +1264,12 @@ def try_structure_shorthand(items):
         if len(current) != 1 or not isinstance(current[0], dict):
             return None
         node = current[0]
-        if set(node.keys()) - {'groupBy', 'children'}:
+        # Автоматические отбор и порядок сокращению не мешают: они и есть умолчание.
+        if set(node.keys()) - {'groupFields', 'children', 'selection', 'order'}:
             return None
-        gb = node.get('groupBy')
+        if node.get('selection') not in (None, ['Auto']) or node.get('order') not in (None, ['Auto']):
+            return None
+        gb = node.get('groupFields')
         children = node.get('children')
         if not gb:
             if children:
@@ -1177,7 +1320,7 @@ def build_settings(s_el):
     if dp_el is not None:
         dp = build_data_parameters(dp_el, s)
         if dp:
-            s['dataParameters'] = dp
+            s['dataParameters'] = 'auto' if auto_data_parameters(dp) else dp
     struct_items = [build_structure_item(c) for c in kids(s_el, 'item')]
     if struct_items:
         short = try_structure_shorthand(struct_items)
@@ -1196,7 +1339,7 @@ def build_variant(v_el):
     p_el = kid(v_el, 'presentation')
     pres = ml_text(p_el, node) if p_el is not None else ''
     if pres and pres != node['name']:
-        node['presentation'] = pres
+        node['title'] = pres
     s_el = kid(v_el, 'settings')
     if s_el is not None:
         node['settings'] = build_settings(s_el)
@@ -1209,7 +1352,7 @@ def build_variant(v_el):
 
 
 def is_default_variant(v):
-    if v.get('name') != VARIANT_MAIN or 'presentation' in v or '_todo' in v:
+    if v.get('name') != VARIANT_MAIN or 'title' in v or '_todo' in v:
         return False
     s = v.get('settings')
     if s is None:
@@ -1252,15 +1395,25 @@ def build_template_cell(cell_el, tpl_node):
             elif p == 'Расшифровка':
                 info['dd'] = v_txt
             elif p == 'ЦветФона':
-                probe['bg'] = normalize_color(v_txt)
+                probe['bgColor'] = normalize_color(v_txt)
+            elif p == 'ЦветТекста':
+                probe['textColor'] = normalize_color(v_txt)
+            elif p == 'ЦветГраницы':
+                probe['borderColor'] = normalize_color(v_txt)
+            elif p == 'СтильГраницы':
+                probe['borders'] = True
             elif p == 'ГоризонтальноеПоложение':
                 probe['hAlign'] = v_txt
+            elif p == 'ВертикальноеПоложение':
+                probe['vAlign'] = v_txt
             elif p == 'Размещение':
                 probe['wrap'] = (v_txt == 'Wrap')
-            elif p == 'Шрифт':
-                probe['font'] = True
-        if probe:
-            info['probe'] = probe
+            elif p == 'Шрифт' and v_el is not None:
+                probe['font'] = v_el.get('faceName') or ''
+                probe['fontSize'] = parse_num(v_el.get('height') or '0')
+                probe['bold'] = (v_el.get('bold') == 'true')
+                probe['italic'] = (v_el.get('italic') == 'true')
+        info['probe'] = probe
     content = None
     item_el = kid(cell_el, 'item')
     if item_el is not None:
@@ -1291,18 +1444,95 @@ def build_template_cell(cell_el, tpl_node):
     return info
 
 
+# Оформление ячейки читается целиком и сверяется с пресетами: встроенными и пользовательскими
+# из skd-styles.json. Так распознается и свой стиль, а не только четыре штатных.
+AREA_STYLE_PRESETS = {
+    'data': {
+        'font': 'Arial', 'fontSize': 10, 'bold': False, 'italic': False,
+        'hAlign': None, 'vAlign': None, 'wrap': False,
+        'bgColor': 'style:ReportGroup1BackColor', 'textColor': None,
+        'borderColor': 'style:ReportLineColor', 'borders': True,
+    },
+    'header': {
+        'font': 'Arial', 'fontSize': 10, 'bold': False, 'italic': False,
+        'hAlign': 'Center', 'vAlign': None, 'wrap': True,
+        'bgColor': 'style:ReportHeaderBackColor', 'textColor': None,
+        'borderColor': 'style:ReportLineColor', 'borders': True,
+    },
+    'subheader': {
+        'font': 'Arial', 'fontSize': 10, 'bold': False, 'italic': False,
+        'hAlign': 'Center', 'vAlign': None, 'wrap': True,
+        'bgColor': None, 'textColor': None,
+        'borderColor': 'style:ReportLineColor', 'borders': True,
+    },
+    'total': {
+        'font': 'Arial', 'fontSize': 10, 'bold': False, 'italic': False,
+        'hAlign': None, 'vAlign': None, 'wrap': False,
+        'bgColor': None, 'textColor': None,
+        'borderColor': 'style:ReportLineColor', 'borders': True,
+    },
+    'none': {
+        'font': None, 'fontSize': None, 'bold': False, 'italic': False,
+        'hAlign': None, 'vAlign': None, 'wrap': False,
+        'bgColor': None, 'textColor': None,
+        'borderColor': None, 'borders': False,
+    },
+}
+
+STYLE_KEYS = ('font', 'fontSize', 'bold', 'italic', 'hAlign', 'vAlign', 'wrap',
+              'bgColor', 'textColor', 'borderColor', 'borders')
+
+USER_STYLE_PRESETS = {}
+
+
+def load_user_style_presets(base_dir):
+    """Пользовательские пресеты берутся оттуда же, откуда их берет сборка: каталог макета,
+    текущий каталог, затем подъем по дереву к presets/skills/skd."""
+    candidates = [os.path.join(base_dir, 'skd-styles.json'),
+                  os.path.join(os.getcwd(), 'skd-styles.json')]
+    scan_dir = base_dir
+    while scan_dir:
+        candidates.append(os.path.join(scan_dir, 'presets', 'skills', 'skd', 'skd-styles.json'))
+        parent_dir = os.path.dirname(scan_dir)
+        if parent_dir == scan_dir:
+            break
+        scan_dir = parent_dir
+    for candidate in candidates:
+        if not os.path.isfile(candidate):
+            continue
+        try:
+            with open(candidate, encoding='utf-8-sig') as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            for name, overrides in data.items():
+                if not isinstance(overrides, dict):
+                    continue
+                base = dict(AREA_STYLE_PRESETS.get(name, AREA_STYLE_PRESETS['data']))
+                base.update(overrides)
+                USER_STYLE_PRESETS[name] = base
+        return
+
+
+def style_signature(props):
+    out = {}
+    for k in STYLE_KEYS:
+        v = props.get(k)
+        if k in ('bold', 'italic', 'wrap', 'borders'):
+            out[k] = bool(v)
+        elif k == 'fontSize':
+            out[k] = None if v is None else parse_num(str(v))
+        else:
+            out[k] = v if v else None
+    return tuple(out[k] for k in STYLE_KEYS)
+
+
 def detect_template_style(probe):
-    bg = probe.get('bg')
-    center = probe.get('hAlign') == 'Center'
-    wrap = bool(probe.get('wrap'))
-    if bg == 'style:ReportHeaderBackColor' and center and wrap:
-        return 'header'
-    if bg == 'style:ReportGroup1BackColor' and not center and not wrap:
-        return 'data'
-    if not bg and center and wrap:
-        return 'subheader'
-    if not bg and not center and not wrap:
-        return 'total'
+    want = style_signature(probe)
+    for name, preset in list(AREA_STYLE_PRESETS.items()) + list(USER_STYLE_PRESETS.items()):
+        if style_signature(preset) == want:
+            return name
     return None
 
 
@@ -1315,6 +1545,7 @@ def build_template(el):
     widths = []
     min_height = 0
     first_probe = None
+    cell_probes = []
     cell_dd = {}
     if inner is not None:
         for row_el in kids(inner, 'item'):
@@ -1323,21 +1554,24 @@ def build_template(el):
                 add_todo(node, 'элемент области макета не поддержан: ' + rxt)
                 continue
             row = []
+            row_probes = []
             c_i = 0
             for cell_el in kids(row_el, 'tableCell'):
                 info = build_template_cell(cell_el, node)
                 row.append(info['content'])
+                row_probes.append(info['probe'])
                 if len(rows) == 0:
                     widths.append(info['width'])
                     if c_i == 0:
                         min_height = info['minHeight']
-                if first_probe is None and info['probe']:
+                if first_probe is None and info['probe'] is not None:
                     first_probe = info['probe']
                 content = info['content']
                 if info['dd'] and isinstance(content, str) and content.startswith('{') and content.endswith('}'):
                     cell_dd[content[1:-1]] = info['dd']
                 c_i += 1
             rows.append(row)
+            cell_probes.append(row_probes)
     else:
         add_todo(node, 'макет без области AreaTemplate - строки не декомпилированы')
     style = None
@@ -1345,10 +1579,21 @@ def build_template(el):
         style = detect_template_style(first_probe)
         if style is None:
             add_todo(node, 'оформление ячеек не распознано - подбери style вручную (header/data/subheader/total или skd-styles.json)')
-    if style and style != 'data':
+    # Ячейка со своим оформлением записывается объектом: макетный стиль ей не подходит.
+    if style:
+        for r_i, row_probes in enumerate(cell_probes):
+            for c_i, probe in enumerate(row_probes):
+                if probe is None or c_i >= len(rows[r_i]):
+                    continue
+                cell_style = detect_template_style(probe)
+                if cell_style is None or cell_style == style:
+                    continue
+                rows[r_i][c_i] = {'value': rows[r_i][c_i], 'style': cell_style}
+    if style:
         node['style'] = style
     if any(w for w in widths):
-        node['widths'] = widths
+        # Ширина колонки записывается строкой: так ее задает и читает наш DSL.
+        node['widths'] = [str(w) for w in widths]
     if min_height:
         node['minHeight'] = min_height
     node['rows'] = rows
@@ -1418,6 +1663,71 @@ def build_group_template(el, ttype_override):
 
 # === Main ===
 
+def safe_query_file_name(name):
+    """Имя набора приходит из чужого файла и идет в имя файла запроса.
+
+    Разделители пути и недопустимые символы в нем сделали бы запись мимо каталога назначения.
+    """
+    safe = re.sub(r'[^\w-]', '_', name, flags=re.UNICODE).strip('._')
+    if not safe:
+        safe = 'query'
+    safe = safe[:64]
+    candidate = safe
+    suffix = 2
+    while candidate in external_queries:
+        candidate = f'{safe}_{suffix}'
+        suffix += 1
+    return candidate
+
+
+# --- Черновой JSON (общий блок, версия 2) ---
+# Ширина строки, после которой контейнер разворачивается по элементу на строку.
+DRAFT_JSON_WIDTH = 400
+
+
+def to_inline_json(value):
+    if value is None:
+        return 'null'
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    if isinstance(value, (int, float)):
+        return json.dumps(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, dict):
+        if not value:
+            return '{}'
+        parts = [json.dumps(str(k), ensure_ascii=False) + ': ' + to_inline_json(v)
+                 for k, v in value.items()]
+        return '{ ' + ', '.join(parts) + ' }'
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return '[]'
+        return '[' + ', '.join(to_inline_json(v) for v in value) + ']'
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def to_draft_json(value, indent=''):
+    """Описание пишется в том виде, в каком его удобно править руками: контейнер идет
+    одной строкой, пока в нее помещается, и разворачивается, когда перестает."""
+    rendered = to_inline_json(value)
+    if (len(indent) + len(rendered) <= DRAFT_JSON_WIDTH
+            or not isinstance(value, (dict, list, tuple)) or not value):
+        return rendered
+    inner = indent + '  '
+    if isinstance(value, dict):
+        parts = [inner + json.dumps(str(k), ensure_ascii=False) + ': ' + to_draft_json(v, inner)
+                 for k, v in value.items()]
+        return '{\n' + ',\n'.join(parts) + '\n' + indent + '}'
+    parts = [inner + to_draft_json(v, inner) for v in value]
+    return '[\n' + ',\n'.join(parts) + '\n' + indent + ']'
+# --- Конец общего блока чернового JSON ---
+
+
+external_queries = {}
+query_file_prefix = ['']
+
+
 def main():
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8')
@@ -1443,6 +1753,8 @@ def main():
         print('Файл не найден: ' + in_path, file=sys.stderr)
         sys.exit(1)
 
+    load_user_style_presets(os.path.dirname(in_path))
+
     root = None
     try:
         for event, obj in ET.iterparse(in_path, events=('start-ns', 'start')):
@@ -1466,6 +1778,8 @@ def main():
         base = os.path.splitext(in_path)[0]
         out_path = base + '.skd.json'
     out_path = os.path.abspath(out_path)
+    # Имя внешнего файла запроса берется от имени описания: рядом с ним он и лежит.
+    query_file_prefix[0] = os.path.splitext(os.path.basename(out_path))[0]
 
     root_todos = []
 
@@ -1504,6 +1818,8 @@ def main():
 
     raw_params = [build_parameter(p) for p in kids(root, 'parameter')]
     raw_params = collapse_auto_dates(raw_params)
+    global _schema_params
+    _schema_params = raw_params
     params = [param_to_shorthand(p) for p in raw_params]
     if params:
         result['parameters'] = params
@@ -1551,7 +1867,12 @@ def main():
     if out_dir and not os.path.isdir(out_dir):
         os.makedirs(out_dir, exist_ok=True)
     with open(out_path, 'w', encoding='utf-8', newline='\n') as f:
-        f.write(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
+        f.write(to_draft_json(result))
+
+    for query_name, query_text in external_queries.items():
+        query_path = os.path.join(out_dir, query_file_prefix[0] + '-' + query_name + '.sql')
+        with open(query_path, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(query_text)
 
     for w in warnings_list:
         print('TODO: ' + w, file=sys.stderr)

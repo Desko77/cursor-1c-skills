@@ -282,13 +282,21 @@ def esc_xml(s):
     return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
 
-def write_utf8_bom(path, content):
+def write_utf8_bom(path, content, eol='\r\n'):
     # Исходники 1С хранятся в CRLF: этого ждет Конфигуратор, и это закреплено в .gitattributes.
     # Сборка идет через '\n'.join, поэтому концы строк разворачиваются здесь, на записи.
     # Нормализация идемпотентна - смешанный текст тоже приходит к одному виду.
-    content = content.replace('\r\n', '\n').replace('\n', '\r\n')
+    # Правка существующего файла передает сюда его собственный eol: форсировать CRLF там
+    # нельзя, иначе навык переписывает весь чужой файл ради одной добавленной строки.
+    content = content.replace('\r\n', '\n').replace('\n', eol)
     with open(path, 'w', encoding='utf-8-sig', newline='') as f:
         f.write(content)
+
+
+def format_version_rank(version):
+    """Версии сравниваются по составным частям: 2.9 старее, чем 2.21, хотя как число больше."""
+    m = re.match(r"^(\d+)\.(\d+)$", str(version or ""))
+    return int(m.group(1)) * 100 + int(m.group(2)) if m else 0
 
 
 def write_child_subsystem_stub(child_path, child_name, format_version):
@@ -304,7 +312,7 @@ def write_child_subsystem_stub(child_path, child_name, format_version):
         'xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" '
         # Палитра появляется в шапке с формата 2.21 (8.5) и встает между lf и style.
         + ('xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" '
-           if float(format_version) >= 2.21 else '') +
+           if format_version_rank(format_version) >= 221 else '') +
         'xmlns:style="http://v8.1c.ru/8.1/data/ui/style" '
         'xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" '
         'xmlns:v8="http://v8.1c.ru/8.1/data/core" '
@@ -550,6 +558,16 @@ def save_xml_bom(tree, path):
     with open(path, "wb") as f:
         f.write(b"\xef\xbb\xbf")
         f.write(xml_bytes)
+
+
+def sibling_skill_script(name, script_name):
+    """Скрипт соседнего навыка. Каталог навыка назван с префиксом 1c-, без него пути нет."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    for folder in ('1c-' + name, name):
+        candidate = os.path.normpath(os.path.join(base, '..', '..', folder, 'scripts', script_name))
+        if os.path.isfile(candidate):
+            return candidate
+    return ''
 
 
 def main():
@@ -885,8 +903,8 @@ def main():
 
     # --- Auto-validate ---
     if not args.NoValidate:
-        validate_script = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "subsystem-validate", "scripts", "subsystem-validate.py"))
-        if os.path.isfile(validate_script):
+        validate_script = sibling_skill_script('subsystem-validate', 'subsystem-validate.py')
+        if validate_script:
             print()
             print("--- Running subsystem-validate ---")
             subprocess.run([sys.executable, validate_script, "-SubsystemPath", resolved_path])

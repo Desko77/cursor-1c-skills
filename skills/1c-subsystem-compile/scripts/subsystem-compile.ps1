@@ -143,6 +143,18 @@ function Assert-EditAllowed([string]$targetPath, [string]$require) {
 }
 # --- Конец общего блока гарда поддержки ---
 
+# Скрипт соседнего навыка. Каталог навыка назван с префиксом 1c-, без него пути нет.
+function Get-SiblingSkillScript {
+	param([string]$name, [string]$scriptName)
+	foreach ($folder in @("1c-$name", $name)) {
+		$candidate = Join-Path (Join-Path $PSScriptRoot "..\..\$folder") "scripts\$scriptName"
+		$candidate = [System.IO.Path]::GetFullPath($candidate)
+		if (Test-Path $candidate) { return $candidate }
+	}
+	return ""
+}
+
+
 # --- 1. Load JSON ---
 if ($DefinitionFile -and $Value) {
 	Write-Error "Cannot use both -DefinitionFile and -Value"
@@ -194,8 +206,11 @@ function Esc-Xml([string]$s) {
 function Split-CamelCase([string]$name) {
 	if (-not $name) { return $name }
 	$result = [regex]::Replace($name, '([a-z\u0430-\u044F\u0451])([A-Z\u0410-\u042F\u0401])', '$1 $2')
+	# Регистр понижается только у одиночной заглавной: аббревиатура из нескольких
+	# заглавных подряд (API, НДС) остается как написана.
 	if ($result.Length -gt 1) {
-		$result = $result.Substring(0,1) + $result.Substring(1).ToLower()
+		$tail = [regex]::Replace($result.Substring(1), '(?<![А-ЯЁA-Z])([А-ЯЁA-Z])(?![А-ЯЁA-Z])', { param($m) $m.Groups[1].Value.ToLower() })
+		$result = $result.Substring(0,1) + $tail
 	}
 	return $result
 }
@@ -229,12 +244,20 @@ function New-Guid-String {
 	return [System.Guid]::NewGuid().ToString()
 }
 
+# Версии формата сравниваются по составным частям, а не как десятичная дробь:
+# 2.9 старее, чем 2.21, хотя как число больше.
+function Get-FormatVersionRank {
+	param([string]$Version)
+	if ($Version -match '^(\d+)\.(\d+)$') { return [int]$Matches[1] * 100 + [int]$Matches[2] }
+	return 0
+}
+
 function Write-ChildSubsystemStub([string]$childPath, [string]$childName, [string]$formatVersion, [System.Text.Encoding]$utf8Bom) {
 	$childUuid = New-Guid-String
 	$sb = New-Object System.Text.StringBuilder 2048
 	[void]$sb.AppendLine('<?xml version="1.0" encoding="UTF-8"?>')
 	# Начиная с формата 2.21 (8.5) в шапке объявляется палитра - между lf и style.
-	$palNs = if ([double]::Parse($formatVersion, [System.Globalization.CultureInfo]::InvariantCulture) -ge 2.21) { ' xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"' } else { '' }
+	$palNs = if ((Get-FormatVersionRank $formatVersion) -ge 221) { ' xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"' } else { '' }
 	[void]$sb.AppendLine("<MetaDataObject xmlns=`"http://v8.1c.ru/8.3/MDClasses`" xmlns:app=`"http://v8.1c.ru/8.2/managed-application/core`" xmlns:cfg=`"http://v8.1c.ru/8.1/data/enterprise/current-config`" xmlns:cmi=`"http://v8.1c.ru/8.2/managed-application/cmi`" xmlns:ent=`"http://v8.1c.ru/8.1/data/enterprise`" xmlns:lf=`"http://v8.1c.ru/8.2/managed-application/logform`"$palNs xmlns:style=`"http://v8.1c.ru/8.1/data/ui/style`" xmlns:sys=`"http://v8.1c.ru/8.1/data/ui/fonts/system`" xmlns:v8=`"http://v8.1c.ru/8.1/data/core`" xmlns:v8ui=`"http://v8.1c.ru/8.1/data/ui`" xmlns:web=`"http://v8.1c.ru/8.1/data/ui/colors/web`" xmlns:win=`"http://v8.1c.ru/8.1/data/ui/colors/windows`" xmlns:xen=`"http://v8.1c.ru/8.3/xcf/enums`" xmlns:xpr=`"http://v8.1c.ru/8.3/xcf/predef`" xmlns:xr=`"http://v8.1c.ru/8.3/xcf/readable`" xmlns:xs=`"http://www.w3.org/2001/XMLSchema`" xmlns:xsi=`"http://www.w3.org/2001/XMLSchema-instance`" version=`"$formatVersion`">")
 	[void]$sb.AppendLine("`t<Subsystem uuid=`"$childUuid`">")
 	[void]$sb.AppendLine("`t`t<Properties>")
@@ -462,7 +485,7 @@ $indent = "`t`t`t"
 
 X '<?xml version="1.0" encoding="UTF-8"?>'
 # Начиная с формата 2.21 (8.5) в шапке объявляется палитра - между lf и style.
-$palNs = if ([double]::Parse($formatVersion, [System.Globalization.CultureInfo]::InvariantCulture) -ge 2.21) { ' xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"' } else { '' }
+$palNs = if ((Get-FormatVersionRank $formatVersion) -ge 221) { ' xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"' } else { '' }
 X "<MetaDataObject xmlns=`"http://v8.1c.ru/8.3/MDClasses`" xmlns:app=`"http://v8.1c.ru/8.2/managed-application/core`" xmlns:cfg=`"http://v8.1c.ru/8.1/data/enterprise/current-config`" xmlns:cmi=`"http://v8.1c.ru/8.2/managed-application/cmi`" xmlns:ent=`"http://v8.1c.ru/8.1/data/enterprise`" xmlns:lf=`"http://v8.1c.ru/8.2/managed-application/logform`"$palNs xmlns:style=`"http://v8.1c.ru/8.1/data/ui/style`" xmlns:sys=`"http://v8.1c.ru/8.1/data/ui/fonts/system`" xmlns:v8=`"http://v8.1c.ru/8.1/data/core`" xmlns:v8ui=`"http://v8.1c.ru/8.1/data/ui`" xmlns:web=`"http://v8.1c.ru/8.1/data/ui/colors/web`" xmlns:win=`"http://v8.1c.ru/8.1/data/ui/colors/windows`" xmlns:xen=`"http://v8.1c.ru/8.3/xcf/enums`" xmlns:xpr=`"http://v8.1c.ru/8.3/xcf/predef`" xmlns:xr=`"http://v8.1c.ru/8.3/xcf/readable`" xmlns:xs=`"http://www.w3.org/2001/XMLSchema`" xmlns:xsi=`"http://www.w3.org/2001/XMLSchema-instance`" version=`"$formatVersion`">"
 X "`t<Subsystem uuid=`"$uuid`">"
 X "`t`t<Properties>"
@@ -689,12 +712,12 @@ if ($parentXmlPath -and (Test-Path $parentXmlPath)) {
 
 # --- 7. Auto-validate ---
 if (-not $NoValidate) {
-	$validateScript = Join-Path (Join-Path $PSScriptRoot "..\..\subsystem-validate") "scripts\subsystem-validate.ps1"
-	$validateScript = [System.IO.Path]::GetFullPath($validateScript)
-	if (Test-Path $validateScript) {
+	# Проверка идет тем же портом: состав и вложенность знает subsystem-validate,
+	# meta-validate смотрит только корень, UUID и имя.
+	$validateScript = Get-SiblingSkillScript "subsystem-validate" "subsystem-validate.ps1"
+	if ($validateScript) {
 		Write-Host ""
-		Write-Host "--- Running subsystem-validate ---"
-		& powershell.exe -NoProfile -File $validateScript -SubsystemPath $targetXml
+		& $validateScript -SubsystemPath $targetXml
 	}
 }
 

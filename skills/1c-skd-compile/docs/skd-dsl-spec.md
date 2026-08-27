@@ -144,6 +144,31 @@
 }
 ```
 
+### Параметры ввода поля (inputParameters)
+
+Параметры ввода задают поведение поля при ручном вводе значения. Три формы значения:
+
+```json
+{
+  "field": "Сегмент",
+  "type": "CatalogRef.Сегменты",
+  "inputParameters": [
+    { "parameter": "ПараметрыВыбора", "choiceParameters": [
+      { "name": "Отбор.Способ", "values": ["Перечисление.Способы.Вручную"] }
+    ] },
+    { "parameter": "СвязиПараметровВыбора", "choiceParameterLinks": [
+      { "name": "Отбор.Организация", "value": "Организация", "mode": "Clear" }
+    ] },
+    { "parameter": "БыстрыйВыбор", "use": false, "value": true }
+  ]
+}
+```
+
+- `choiceParameters` - параметры выбора; пустой список пишется одиночным тегом.
+- `choiceParameterLinks` - связи параметров выбора; `mode` по умолчанию `Clear`.
+- `value` - простое значение; тип определяется по значению (булево, число, ссылка вида
+  `Перечисление.X.Y`, иначе строка). `use: false` снимает признак использования.
+
 ### Парсинг shorthand
 
 1. Разделить по пробелам; найти `@`-роли и `#`-ограничения
@@ -156,8 +181,11 @@
 |-----|-------------|--------------|
 | `string` | `xs:string` | Length=0, AllowedLength=Variable |
 | `string(N)` | `xs:string` | Length=N, AllowedLength=Variable |
+| `string(N,fix)` | `xs:string` | Length=N, AllowedLength=Fixed |
 | `decimal(D,F)` | `xs:decimal` | Digits=D, FractionDigits=F, AllowedSign=Any |
 | `decimal(D,F,nonneg)` | `xs:decimal` | Digits=D, FractionDigits=F, AllowedSign=Nonnegative |
+| `decimal(D)` | `xs:decimal` | Digits=D, FractionDigits=0, AllowedSign=Any |
+| `decimal(D,nonneg)` | `xs:decimal` | Digits=D, FractionDigits=0, AllowedSign=Nonnegative |
 | `boolean` | `xs:boolean` | — |
 | `date` | `xs:dateTime` | DateFractions=Date |
 | `dateTime` | `xs:dateTime` | DateFractions=DateTime |
@@ -166,6 +194,7 @@
 | `EnumRef.XXX` | `d5p1:EnumRef.XXX` | inline xmlns:d5p1 |
 | `ChartOfAccountsRef.XXX` | `d5p1:ChartOfAccountsRef.XXX` | inline xmlns:d5p1 |
 | `StandardPeriod` | `v8:StandardPeriod` | — |
+| `["CatalogRef.A", "CatalogRef.B"]` | по элементу `v8:Type` на тип | составной тип |
 
 > **Ссылочные типы** (`CatalogRef.XXX`, `DocumentRef.XXX` и др.) эмитируются с inline namespace declaration: `<v8:Type xmlns:d5p1="http://v8.1c.ru/8.1/data/enterprise/current-config">d5p1:CatalogRef.XXX</v8:Type>`. Использование префикса `cfg:` вместо `d5p1:` с объявлением namespace приводит к ошибке XDTO. Сборка EPF со ссылочными типами требует базу с соответствующей конфигурацией (не пустую).
 
@@ -199,6 +228,13 @@
 | `@balance` | `"role": "balance"` или `{"balance": true}` | `<dcscom:balance>true</dcscom:balance>` |
 | `@period` | `"role": "period"` или `{"period": true}` | `<dcscom:periodNumber>1</dcscom:periodNumber>` + `<dcscom:periodType>Main</dcscom:periodType>` |
 
+Признак роли может нести значение. В шорткате он пишется парой `имя=значение` рядом с самим
+признаком:
+
+```json
+"fields": ["СуммаНач: decimal(15,2) @balance balanceGroupName=Сумма balanceType=OpeningBalance"]
+```
+
 Объектная форма с доп. полями:
 ```json
 "role": {
@@ -206,6 +242,16 @@
   "accountTypeExpression": "Счёт.ВидСчёта",
   "balanceGroup": "/Остатки"
 }
+```
+
+### Сортировка по выражению
+
+У поля бывает свой порядок, отличный от порядка по значению:
+
+```json
+{ "field": "ВидРасчета", "type": "CatalogRef.ВидыРасчета",
+  "orderExpression": { "expression": "ЕстьNULL(ВидРасчета.Порядок, 10000)",
+                       "orderType": "Asc", "autoOrder": false } }
 ```
 
 ### Ограничения
@@ -834,6 +880,7 @@ XML-маппинг — по `<group>` на каждый элемент:
 | `"\|"` | Вертикальное объединение с ячейкой выше (`ОбъединятьПоВертикали`) |
 | `">"` | Горизонтальное объединение с ячейкой слева (`ОбъединятьПоГоризонтали`) |
 | `null` | Пустая ячейка (без содержимого) |
+| `{ "value": ..., "style": ... }` | Ячейка со своим стилем, отличным от стиля макета |
 
 #### Встроенные пресеты стилей
 
@@ -843,6 +890,7 @@ XML-маппинг — по `<group>` на каждый элемент:
 | `data` | ReportGroup1BackColor | Arial 10 | — | нет | Solid 1px |
 | `subheader` | — | Arial 10 | Center | да | Solid 1px |
 | `total` | — | Arial 10 | — | нет | Solid 1px |
+| `none` | — | — | — | нет | — |
 
 #### Пользовательские пресеты (skd-styles.json)
 
