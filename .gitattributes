@@ -1,0 +1,29 @@
+# Политика EOL: в индексе LF, рабочая копия по локальному git-конфигу (autocrlf).
+# Репо без исходников 1С (.bsl/.mdo) - CRLF-форс не требуется.
+* text=auto
+
+# Скрипты с Unix-конвенцией концов строк
+*.sh text eol=lf
+*.py text eol=lf
+
+# Бинарные артефакты
+*.epf binary
+*.erf binary
+*.cf binary
+*.cfe binary
+*.dt binary
+*.mxl binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.7z binary
+*.xlsx binary
+*.docx binary
+
+# Фикстуры концов строк: их байты - предмет проверки, преобразованию не подлежат.
+# Без этих строк рабочая копия получает EOL по core.autocrlf, и LF-фикстура приходит CRLF.
+tests/skills/cases/*/fixtures/lf-*/** text eol=lf
+tests/skills/cases/*/fixtures/crlf-*/** text eol=crlf
