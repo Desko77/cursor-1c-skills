@@ -3,7 +3,7 @@
 Набор скилов, правил и команд для [Cursor IDE](https://cursor.com): агент правит 1С по формату платформы,
 а не текстовым поиском по файлам.
 
-[![Лицензия MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Лицензия MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE.md)
 [![Релиз](https://img.shields.io/github/v/release/Desko77/cursor-1c-skills)](https://github.com/Desko77/cursor-1c-skills/releases)
 [![Тесты](https://github.com/Desko77/cursor-1c-skills/actions/workflows/tests.yml/badge.svg)](https://github.com/Desko77/cursor-1c-skills/actions/workflows/tests.yml)
 
