@@ -3,7 +3,7 @@ name: 1c-cf-edit
 description: "Точечное редактирование конфигурации 1С. Используй когда нужно изменить свойства конфигурации, добавить или удалить объект из состава, настроить роли по умолчанию"
 ---
 
-# /cf-edit — редактирование конфигурации 1С
+# /cf-edit - редактирование конфигурации 1С
 
 Точечное редактирование Configuration.xml: свойства, состав ChildObjects, роли по умолчанию.
 
@@ -26,7 +26,7 @@ powershell.exe -NoProfile -File skills/1c-cf-edit/scripts/cf-edit.ps1 -ConfigPat
 | Операция | Формат Value | Описание |
 |----------|-------------|----------|
 | `modify-property` | `Ключ=Значение` (batch `;;`) | Изменить свойство |
-| `add-childObject` | `Type.Name` (batch `;;`) | Зарегистрировать уже существующий файл объекта в ChildObjects. Для создания нового объекта используй `/meta-compile`, `/role-compile`, `/subsystem-compile` — они регистрируют автоматически |
+| `add-childObject` | `Type.Name` (batch `;;`) | Зарегистрировать уже существующий файл объекта в ChildObjects. Для создания нового объекта используй `/meta-compile`, `/role-compile`, `/subsystem-compile` - они регистрируют автоматически |
 | `remove-childObject` | `Type.Name` (batch `;;`) | Удалить объект из ChildObjects |
 | `add-defaultRole` | `Role.Name` или `Name` | Добавить роль по умолчанию |
 | `remove-defaultRole` | `Role.Name` или `Name` | Удалить роль по умолчанию |

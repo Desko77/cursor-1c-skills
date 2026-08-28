@@ -1,9 +1,9 @@
 ---
 name: 1c-template-remove
-description: "Удалить макет из объекта 1С (обработка, отчёт, справочник, документ и др.)"
+description: "Удалить макет из объекта 1С (обработка, отчет, справочник, документ и др.)"
 ---
 
-# /template-remove — Удаление макета
+# /template-remove - Удаление макета
 
 Удаляет макет и убирает его регистрацию из корневого XML объекта.
 
@@ -15,8 +15,8 @@ description: "Удалить макет из объекта 1С (обработ�
 
 | Параметр | Обязательный | По умолчанию | Описание |
 |--------------|:------------:|--------------|-------------------------------------|
-| ObjectName | да | — | Имя объекта |
-| TemplateName | да | — | Имя макета для удаления |
+| ObjectName | да | - | Имя объекта |
+| TemplateName | да | - | Имя макета для удаления |
 | SrcDir | нет | `src` | Каталог исходников |
 
 ## Команда
@@ -34,5 +34,5 @@ powershell.exe -NoProfile -File skills/1c-template-remove/scripts/remove-templat
 
 ## Что модифицируется
 
-- `<SrcDir>/<ObjectName>.xml` — убирается `<Template>` из `ChildObjects`
-- Для ExternalReport/Report: если удалённый макет был указан в `MainDataCompositionSchema` — значение очищается
+- `<SrcDir>/<ObjectName>.xml` - убирается `<Template>` из `ChildObjects`
+- Для ExternalReport/Report: если удаленный макет был указан в `MainDataCompositionSchema` - значение очищается

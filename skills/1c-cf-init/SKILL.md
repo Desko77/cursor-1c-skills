@@ -3,9 +3,9 @@ name: 1c-cf-init
 description: "Создать пустую конфигурацию 1С (scaffold XML-исходников). Используй когда нужно начать новую конфигурацию с нуля"
 ---
 
-# /cf-init — Создание пустой конфигурации 1С
+# /cf-init - Создание пустой конфигурации 1С
 
-Создаёт scaffold исходников пустой конфигурации 1С: `Configuration.xml`, `Languages/Русский.xml`,
+Создает scaffold исходников пустой конфигурации 1С: `Configuration.xml`, `Languages/Русский.xml`,
 `Ext/ClientApplicationInterface.xml` (раскладка командного интерфейса, на нее ссылается `InternalInfo`
 конфигурации).
 
@@ -23,7 +23,7 @@ description: "Создать пустую конфигурацию 1С (scaffold
 
 ## Версия формата
 
-Версия формата задает, какие теги платформа примет при загрузке. Ставить надо не «поновее», а под ту
+Версия формата задает, какие теги платформа примет при загрузке. Ставить надо не "поновее", а под ту
 платформу, куда конфигурация будет грузиться.
 
 | Версия | Платформа | Что добавляет |
@@ -64,6 +64,6 @@ powershell.exe -NoProfile -File skills/1c-cf-init/scripts/cf-init.ps1 -Name "М�
 
 ```
 /cf-init TestConfig -OutputDir test-tmp/cf
-/cf-info test-tmp/cf — проверить созданное
-/cf-validate test-tmp/cf — валидировать
+/cf-info test-tmp/cf - проверить созданное
+/cf-validate test-tmp/cf - валидировать
 ```

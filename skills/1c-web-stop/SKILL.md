@@ -3,9 +3,9 @@ name: 1c-web-stop
 description: "Остановка Apache HTTP Server. Используй когда пользователь просит остановить веб-сервер, Apache, прекратить веб-публикацию"
 ---
 
-# /web-stop — Остановка Apache
+# /web-stop - Остановка Apache
 
-Останавливает Apache HTTP Server. Публикации сохраняются — при следующем `/web-publish` сервер запустится снова.
+Останавливает Apache HTTP Server. Публикации сохраняются - при следующем `/web-publish` сервер запустится снова.
 
 ## Usage
 
@@ -15,7 +15,7 @@ description: "Остановка Apache HTTP Server. Используй когд
 
 ## Параметры подключения
 
-Прочитай `.v8-project.json` из корня проекта. Если задан `webPath` — используй как `-ApachePath`.
+Прочитай `.v8-project.json` из корня проекта. Если задан `webPath` - используй как `-ApachePath`.
 По умолчанию `tools/apache24` от корня проекта.
 
 ## Команда
@@ -33,8 +33,8 @@ powershell.exe -NoProfile -File skills/1c-web-stop/scripts/web-stop.ps1 <пар�
 ## После выполнения
 
 Предложи пользователю:
-- **Перезапуск** — `/web-publish <база>` (повторный вызов поднимет Apache с существующими публикациями)
-- **Удаление публикаций** — `/web-unpublish <имя>` или `/web-unpublish --all`
+- **Перезапуск** - `/web-publish <база>` (повторный вызов поднимет Apache с существующими публикациями)
+- **Удаление публикаций** - `/web-unpublish <имя>` или `/web-unpublish --all`
 
 ## Примеры
 
