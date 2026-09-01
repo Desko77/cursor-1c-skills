@@ -7,7 +7,7 @@
 внутри fenced-блоков кода (КадровыйУчет.КадровыеДанныеСотрудников(...)).
 Каждый токен сверяется с выгрузкой конфигурации:
 
-  - общий модуль CommonModules/<Модуль>/Ext/Module.bsl найден в выгрузке;
+  - общий модуль найден в выгрузке;
   - метод объявлен в модуле;
   - метод экспортный;
   - если рядом с токеном заявлена стабильность ("стабильный" / "служебный"),
@@ -25,14 +25,27 @@
 объектов на переменных (ЗапросВТ.Выполнить()) отфильтровываются.
 Токен сразу после маркера "НЕТ" (конвенция справочника для намеренно
 несуществующих методов: "НЕТ метода `X.Y()` - использовать `X.Z()`")
-не проверяется; замена на той же строке проверяется.
+не проверяется как вызов, но проверяется КАК ОТРИЦАНИЕ: если заявленный
+несуществующим модуль или метод на самом деле есть в выгрузке, это ошибка
+FALSE_NEGATION_MODULE или FALSE_NEGATION_METHOD. Ложное отрицание вреднее
+пропуска - оно уводит от работающего метода. Отрицание имени модуля целиком
+("модуля `X` не существует") разбирается отдельной формой: точечной цепочки
+там нет. Замена на той же строке проверяется как обычный вызов.
 
 Использование:
   python tools/validate_api_reference.py --refs <файл-или-папка-md> --src <выгрузка> [--json]
   python tools/validate_api_reference.py --refs <файл-или-папка-md> --list [--json]
 
-  --src   корень выгрузки конфигурации (папка с CommonModules/); поддержаны
-          выгрузка Конфигуратора (Ext/Module.bsl) и EDT-проект (Module.bsl)
+  --src   корень выгрузки конфигурации; поддержаны три раскладки - выгрузка
+          Конфигуратора (CommonModules/<Модуль>/Ext/Module.bsl), EDT-проект
+          (CommonModules/<Модуль>/Module.bsl) и распаковка v8unpack
+          (CommonModule/<Модуль>/CommonModule.obj.bsl).
+          Ключ можно повторять с префиксом версии, тогда действуют маркеры версии
+          в тексте справочника:
+            --src 3.1.11=<путь> --src 3.2.1=<путь>
+          Вызов без маркера обязан найтись во ВСЕХ переданных выгрузках. Маркер
+          `Модуль.Метод` [3.2.1] сверяет только с этой версией, а [нет в 3.1.11]
+          требует отсутствия в названной версии и наличия в остальных.
   --list  без выгрузки: только извлечь и показать токены с фильтрами
           (визуальная проверка экстрактора)
   --json  машиночитаемый отчет вместо текстового
@@ -143,6 +156,13 @@ MANAGER_PREFIXES = frozenset(name.lower() for name in (
     "ПланыОбмена", "Обработки", "Отчеты", "Константы", "БизнесПроцессы",
     "Задачи", "ВнешниеОбработки", "ВнешниеОтчеты", "Последовательности",
     "ХранилищаНастроек", "ПараметрыСеанса", "HTTPСервисы", "WebСервисы",
+    # Менеджеры платформы без объекта метаданных: обращение к ним выглядит как
+    # вызов общего модуля, но общим модулем не является. Поймано на справочнике
+    # регламентных заданий: антипаттерн "не звать РегламентныеЗадания.НайтиРегламентныеЗадания
+    # платформы напрямую" валидатор принимал за ссылку на несуществующий модуль БСП.
+    "РегламентныеЗадания", "ФоновыеЗадания", "ПланыОбменаМенеджер",
+    "ПользователиИнформационнойБазы", "InfoBaseUsers",
+    "ScheduledJobs", "BackgroundJobs",
     # английские формы
     "Documents", "Catalogs", "InformationRegisters", "AccumulationRegisters",
     "CalculationRegisters", "AccountingRegisters", "Enums",
@@ -202,6 +222,15 @@ RE_NEGATION_AFTER = re.compile(r"в БСП нет|не существует|does
 # таблицы токены ПЕРВОЙ ячейки заявлены несуществующими, остальные валидируются.
 RE_NEG_TABLE_HEADER = re.compile(r"НЕ\s+СУЩЕСТВУ", re.IGNORECASE)
 
+# Отрицание имени МОДУЛЯ целиком, без метода: "модуля `РегламентныеЗадания` не
+# существует", "модуль `X` НЕ существует как общий модуль". Точечные цепочки
+# ловятся общим разбором, а одиночное имя в бэктиках им не покрывается: без
+# этой формы самая частая и полезная запись отрицательного знания не проверялась.
+RE_NEG_MODULE = re.compile(
+    r"модул[ьяе]\w*\s+`([A-ZА-ЯЁ][A-Za-zА-Яа-яЁё0-9_]*)`"
+    r"[^`\n]{0,80}?(?:не\s+существует|НЕ\s+СУЩЕСТВУ|в\s+БСП\s+нет)",
+    re.IGNORECASE)
+
 
 # ---------------------------------------------------------------------------
 # Извлечение токенов из markdown
@@ -216,8 +245,14 @@ _SEG = r"[A-ZА-ЯЁ][A-Za-zА-Яа-яЁё0-9_]*"
 # Якорный матч всего спана отсекает выражения (`Поле = Объект.Поле`) и
 # фрагменты с многоточием (`...ФизическихЛиц()`).
 RE_SPAN = re.compile(r"`([^`\n]+)`")
+# Хвост "Экспорт" после сигнатуры разрешен: справочник прикладных сценариев пишет
+# вызов ПОЛНОЙ сигнатурой, `Модуль.Метод(Знач А = Неопределено) Экспорт`, и без
+# этого хвоста такие строки не разбирались вовсе. Поймано на живом справочнике:
+# валидатор отчитывался нулем ошибок, не проверив ни одной сигнатуры, а имя хука
+# в тексте было выдумано по памяти.
 RE_SPAN_TOKEN = re.compile(
-    r"^(" + _SEG + r"(?:\." + _SEG + r")+)[ \t]*(\(.*\))?$")
+    r"^(" + _SEG + r"(?:\." + _SEG + r")+)[ \t]*(\(.*\))?"
+    r"(?:[ \t]+(?:Экспорт|Export))?$", re.IGNORECASE)
 
 # Вызов в fenced-блоке кода: полная точечная цепочка непосредственно перед
 # открывающей скобкой. Lookbehind запрещает старт в середине идентификатора
@@ -227,6 +262,22 @@ RE_CODE_CALL = re.compile(
 
 # Ограждение fenced-блока: ``` или ~~~ в начале строки
 RE_FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
+
+# Маркер версии после упоминания вызова: `Модуль.Метод` [3.2.1] - вызов есть только
+# в этой версии; [нет в 3.1.11] - вызова в этой версии нет. Отсутствие маркера
+# утверждает, что вызов есть во ВСЕХ проверяемых версиях.
+RE_VERSION_MARK = re.compile(
+    r"\[\s*(нет\s+в\s+)?(\d+\.\d+(?:\.\d+)*)\s*\]", re.IGNORECASE)
+
+
+def version_mark(line_text, after_pos):
+    """Достать маркер версии, стоящий в строке ПРАВЕЕ упоминания вызова.
+
+    Возвращает пару (версия, отрицание) либо None. Маркер ищется только правее
+    токена: слева от него в строке может стоять чужой маркер соседнего вызова.
+    """
+    m = RE_VERSION_MARK.search(line_text, after_pos)
+    return (m.group(2), bool(m.group(1))) if m else None
 
 # Маркеры заявленной стабильности в строке с токеном. Приоритет у "служебный":
 # строка "служебный, не стабильный" трактуется как заявка на служебный.
@@ -319,6 +370,15 @@ def extract_file_tokens(md_path):
                 tm = RE_SPAN_TOKEN.match(m.group(1).strip())
                 if tm:
                     chains.append((tm.group(1), m.start()))
+        # Отрицание имени модуля целиком разбирается до цепочек: у него своя
+        # форма, в общий разбор Модуль.Метод оно не попадает.
+        for nm in RE_NEG_MODULE.finditer(raw):
+            skipped.append({
+                "file": str(md_path), "line": lineno,
+                "token": nm.group(1), "category": CAT_NEGATED,
+                "module": nm.group(1), "method": None,
+            })
+
         for chain, start_pos in chains:
             segments = chain.split(".")
             category = classify_chain(segments)
@@ -331,16 +391,25 @@ def extract_file_tokens(md_path):
                 if neg_after and neg_after.start() > start_pos:
                     category = CAT_NEGATED
             if category is not None:
-                skipped.append({
+                entry = {
                     "file": str(md_path), "line": lineno,
                     "token": chain, "category": category,
-                })
+                }
+                # Отрицательное утверждение - тоже утверждение, и оно бывает ложным.
+                # Раньше такой токен просто выпадал из проверки, поэтому запись
+                # "метода X нет" не падала, когда X существует. Разбор сохраняется,
+                # чтобы валидация могла его подтвердить.
+                if category == CAT_NEGATED and len(segments) == 2:
+                    entry["module"] = segments[0]
+                    entry["method"] = segments[1]
+                skipped.append(entry)
                 continue
             accepted.append({
                 "file": str(md_path), "line": lineno,
                 "module": segments[0], "method": segments[1],
                 "token": segments[0] + "." + segments[1],
                 "declared": declared_stability(raw, in_fence),
+                "version": version_mark(raw, start_pos + len(chain)),
             })
     return accepted, skipped
 
@@ -471,28 +540,46 @@ def parse_bsl_methods(bsl_path):
 # Индекс общих модулей выгрузки
 # ---------------------------------------------------------------------------
 
+# Каталог с общими модулями и имена файлов модуля - по раскладкам.
+# Конфигуратор и EDT кладут модули в CommonModules/, распаковка v8unpack - в
+# CommonModule/ (единственное число) и называет файл CommonModule.obj.bsl.
+LAYOUTS = (
+    ("CommonModules", ("Ext/Module.bsl", "Module.bsl")),
+    ("CommonModule", ("CommonModule.obj.bsl",)),
+)
+
+
 def resolve_src_root(src_arg):
-    """Корень с CommonModules/: сам путь либо подпапка src/ (EDT-проект)."""
+    """Корень с каталогом общих модулей: сам путь либо подпапка src/ (EDT-проект).
+
+    Возвращает пару (корень, имя каталога модулей) либо None. Имя каталога
+    возвращается вместе с корнем, потому что дальше оно нужно построению
+    индекса, а определять раскладку дважды - расходиться в трактовке.
+    """
     p = Path(src_arg)
-    if (p / "CommonModules").is_dir():
-        return p
-    if (p / "src" / "CommonModules").is_dir():
-        return p / "src"
+    for dir_name, _files in LAYOUTS:
+        if (p / dir_name).is_dir():
+            return p, dir_name
+        if (p / "src" / dir_name).is_dir():
+            return p / "src", dir_name
     return None
 
 
-def build_module_index(src_root):
-    """Индекс общих модулей: имя_в_нижнем_регистре -> (имя, путь к Module.bsl).
+def build_module_index(src_root, dir_name="CommonModules"):
+    """Индекс общих модулей: имя_в_нижнем_регистре -> (имя, путь к файлу модуля).
 
-    Поддержаны раскладки выгрузки Конфигуратора (<Модуль>/Ext/Module.bsl)
-    и EDT-проекта (<Модуль>/Module.bsl).
+    Поддержаны три раскладки: выгрузка Конфигуратора (<Модуль>/Ext/Module.bsl),
+    EDT-проект (<Модуль>/Module.bsl) и распаковка v8unpack
+    (CommonModule/<Модуль>/CommonModule.obj.bsl).
     """
     index = {}
-    cm_dir = Path(src_root) / "CommonModules"
+    candidates = dict(LAYOUTS).get(dir_name, ("Ext/Module.bsl", "Module.bsl"))
+    cm_dir = Path(src_root) / dir_name
     for entry in sorted(cm_dir.iterdir()):
         if not entry.is_dir():
             continue
-        for candidate in (entry / "Ext" / "Module.bsl", entry / "Module.bsl"):
+        for rel in candidates:
+            candidate = entry.joinpath(*rel.split("/"))
             if candidate.is_file():
                 index[entry.name.lower()] = (entry.name, candidate)
                 break
@@ -513,14 +600,190 @@ def _merge_declared(values):
     return distinct.pop() if len(distinct) == 1 else None
 
 
-def validate_tokens(accepted, module_index):
+def validate_negations(skipped, module_index, parse_cache):
+    """Проверить, что заявленные несуществующими модули и методы правда отсутствуют.
+
+    Отрицательное знание - половина ценности справочника: запись "модуля X нет,
+    механизм лежит в Y" удерживает от выдуманного вызова. Но ложное отрицание
+    вреднее пропуска: оно уводит от РАБОТАЮЩЕГО метода. Поэтому проверяется в
+    обе стороны.
+
+    Разбираются две формы: отрицание пары Модуль.Метод и отрицание имени модуля
+    целиком. Токены прочих категорий (менеджеры, типы метаданных, имена файлов)
+    пропускаются: они и не заявляют отсутствия.
+    """
+    findings = []
+    seen = set()
+    for occ in skipped:
+        if occ.get("category") != CAT_NEGATED or "module" not in occ:
+            continue
+        module, method = occ["module"], occ.get("method")
+        key = (occ["file"], module.lower(), (method or "").lower())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        entry = module_index.get(module.lower())
+        if entry is None:
+            continue  # модуля правда нет, утверждение верно
+        real_module, bsl_path = entry
+
+        if method is None:
+            findings.append({
+                "file": occ["file"], "lines": [occ["line"]], "token": module,
+                "severity": "ERROR", "code": "FALSE_NEGATION_MODULE",
+                "message": "заявлен несуществующим, но общий модуль '%s' есть в выгрузке"
+                           % real_module,
+            })
+            continue
+
+        if real_module not in parse_cache:
+            parse_cache[real_module] = parse_bsl_methods(bsl_path)
+        if method.lower() in parse_cache[real_module]:
+            findings.append({
+                "file": occ["file"], "lines": [occ["line"]],
+                "token": module + "." + method,
+                "severity": "ERROR", "code": "FALSE_NEGATION_METHOD",
+                "message": "заявлен несуществующим, но метод объявлен в модуле (%s)"
+                           % bsl_path,
+            })
+    return findings
+
+
+def load_api_index(path):
+    """Загрузить справочник API БСП: (Модуль.Метод в нижнем регистре) -> запись.
+
+    Нужен для проверок, которые по исходникам не делаются: устаревание вызова -
+    наше курируемое знание, в тексте модуля его нет. Возвращает пустой словарь,
+    если файла нет: справочник не обязателен, без него проверка просто не идет.
+    """
+    index = {}
+    p = Path(path)
+    if not p.is_file():
+        return index
+    with p.open(encoding="utf-8") as handle:
+        for raw in handle:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                record = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            module, name = record.get("m"), record.get("n")
+            if module and name and module != "?":
+                index["%s.%s" % (module.lower(), name.lower())] = record
+    return index
+
+
+def validate_against_index(accepted, api_index):
+    """Прогнать вызовы справочника через индекс API и вернуть находки.
+
+    Проверяется то, чего не видно в исходниках модуля: помечен ли вызов
+    устаревшим. Инвариант "ни один вызов не попадает в справочник без проверки"
+    без этого прохода оставался бы пожеланием - проверка шла бы поштучно и
+    вручную, а значит непредсказуемо.
+    """
+    findings = []
+    seen = set()
+    for occ in accepted:
+        key = (occ["file"], occ["token"].lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        record = api_index.get(occ["token"].lower())
+        if record is None:
+            continue  # отсутствие в индексе ловит сверка с исходниками
+        dep = record.get("dep")
+        if dep:
+            findings.append({
+                "file": occ["file"], "lines": [occ["line"]], "token": occ["token"],
+                "severity": "WARN", "code": "DEPRECATED_CALL",
+                "message": "устаревший вызов, вместо него %s" % dep,
+            })
+    return findings
+
+
+def validate_versioned(accepted, skipped, sources):
+    """Сверить вызовы с выгрузками по маркерам версии.
+
+    Правила, заданные форматом маркера:
+      - вызов БЕЗ маркера утверждает, что есть во всех версиях, и потому
+        проверяется по КАЖДОЙ выгрузке;
+      - вызов с маркером `[3.2.1]` проверяется только по выгрузке этой версии;
+        если такой выгрузки не передали, проверка по нему пропускается;
+      - вызов с маркером `[нет в 3.1.11]` проверяется НАОБОРОТ: он обязан
+        отсутствовать в названной версии и присутствовать в остальных.
+
+    Одна выгрузка без префикса версии сохраняет прежнее поведение: маркеры при
+    ней не действуют, потому что сверять их не с чем.
+    """
+    versions = [v for v in sources if v is not None]
+    findings = []
+
+    def check_in(version, occs):
+        src = sources.get(version) or sources.get(None)
+        if src is None:
+            return []
+        return validate_tokens(occs, src["index"], src["cache"])
+
+    # Без маркера: сверяем по всем выгрузкам, дубли находок схлопываем.
+    plain = [o for o in accepted if not o.get("version")]
+    seen = set()
+    for version in (versions or [None]):
+        for f in check_in(version, plain):
+            key = (f["file"], f["token"], f["code"])
+            if key in seen:
+                continue
+            seen.add(key)
+            if versions:
+                f["message"] += " (версия %s)" % version
+            findings.append(f)
+
+    for occ in accepted:
+        mark = occ.get("version")
+        if not mark:
+            continue
+        version, negated = mark
+        if version not in sources:
+            continue  # выгрузки этой версии не передали, сверять не с чем
+        if not negated:
+            findings += check_in(version, [occ])
+            continue
+        # "нет в <версия>": наличие вызова там - ошибка, отсутствие в остальных тоже.
+        src = sources[version]
+        entry = src["index"].get(occ["module"].lower())
+        if entry is not None:
+            real_module, bsl_path = entry
+            if real_module not in src["cache"]:
+                src["cache"][real_module] = parse_bsl_methods(bsl_path)
+            if occ["method"].lower() in src["cache"][real_module]:
+                findings.append({
+                    "file": occ["file"], "lines": [occ["line"]], "token": occ["token"],
+                    "severity": "ERROR", "code": "FALSE_VERSION_NEGATION",
+                    "message": "помечен как отсутствующий в %s, но там объявлен" % version,
+                })
+        for other in versions:
+            if other != version:
+                findings += check_in(other, [occ])
+
+    findings += validate_negations(
+        skipped, next(iter(sources.values()))["index"],
+        next(iter(sources.values()))["cache"])
+    return findings
+
+
+def validate_tokens(accepted, module_index, parse_cache=None):
     """Сверить принятые токены с индексом модулей выгрузки.
 
     Возвращает список находок: {file, lines, token, severity, code, message}.
     Токены группируются по (файл, модуль, метод); модуль парсится один раз.
+    Кэш разбора модулей принимается снаружи, чтобы проверка отрицаний не
+    разбирала те же файлы повторно.
     """
     findings = []
-    parse_cache = {}
+    if parse_cache is None:
+        parse_cache = {}
 
     groups = {}
     for occ in accepted:
@@ -674,10 +937,14 @@ def main():
                     "(проверка токенов Модуль.Метод)")
     parser.add_argument("--refs", required=True,
                         help="reference-файл .md или папка с ними (рекурсивно)")
-    parser.add_argument("--src", default=None,
-                        help="корень выгрузки конфигурации (папка с CommonModules/)")
+    parser.add_argument("--src", default=None, action="append",
+                        help="корень выгрузки конфигурации; можно повторять с префиксом "
+                             "версии: --src 3.1.11=<путь> --src 3.2.1=<путь>")
     parser.add_argument("--list", action="store_true", dest="list_only",
                         help="только извлечь и показать токены (без сверки с выгрузкой)")
+    parser.add_argument("--index", default=None,
+                        help="справочник API БСП (bsp-api.jsonl) для проверки на "
+                             "устаревание вызовов; по умолчанию берется из набора")
     parser.add_argument("--json", action="store_true",
                         help="отчет в формате JSON")
     args = parser.parse_args()
@@ -712,15 +979,40 @@ def main():
         print("Ошибка: нужен --src <выгрузка> (или --list для извлечения без сверки)",
               file=sys.stderr)
         sys.exit(2)
-    src_root = resolve_src_root(args.src)
-    if src_root is None:
-        print("Ошибка: в --src нет папки CommonModules/: %s" % args.src,
-              file=sys.stderr)
-        sys.exit(2)
+    # Выгрузок может быть несколько, каждая со своей версией библиотеки.
+    # Без префикса версия считается "любой" - это прежнее поведение с одним --src.
+    sources = {}
+    for raw_src in args.src:
+        version, _, path = raw_src.partition("=")
+        if not path:
+            version, path = None, raw_src
+        resolved = resolve_src_root(path)
+        if resolved is None:
+            print("Ошибка: в --src нет папки с общими модулями "
+                  "(CommonModules/ либо CommonModule/): %s" % path, file=sys.stderr)
+            sys.exit(2)
+        root, layout_dir = resolved
+        sources[version] = {
+            "root": root,
+            "index": build_module_index(root, layout_dir),
+            "cache": {},
+        }
 
-    module_index = build_module_index(src_root)
     all_accepted = [occ for acc, _ in per_file.values() for occ in acc]
-    findings = validate_tokens(all_accepted, module_index)
+    all_skipped = [occ for _, skp in per_file.values() for occ in skp]
+
+    findings = validate_versioned(all_accepted, all_skipped, sources)
+
+    # Проход по справочнику API: ловит то, чего в исходниках модуля не видно.
+    default_index = (Path(__file__).resolve().parent.parent / "skills" / "1c-bsp-api"
+                     / "references" / "bsp-api.jsonl")
+    api_index = load_api_index(args.index or default_index)
+    if api_index:
+        findings += validate_against_index(all_accepted, api_index)
+    # Для отчета берем первую выгрузку: счет модулей и корень нужны как ориентир,
+    # а находки уже собраны по всем версиям.
+    first = next(iter(sources.values()))
+    src_root, module_index = first["root"], first["index"]
 
     errors = sum(1 for f in findings if f["severity"] == "ERROR")
     warns = sum(1 for f in findings if f["severity"] == "WARN")
