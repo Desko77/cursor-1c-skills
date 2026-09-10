@@ -426,7 +426,9 @@ python tools/convert_from_claude.py --source ../claude-code-skills-1c --target .
 
 ## Лицензия
 
-MIT
+MIT. Основа набора - [Nikolay-Shirokov/cc-1c-skills](https://github.com/Nikolay-Shirokov/cc-1c-skills)
+(MIT, Nick Shirokov): скилы работы с XML-форматами конфигуратора и командной строкой платформы получены
+оттуда и доработаны. Уведомление об авторских правах сохранено в [LICENSE.md](LICENSE.md).
 
 ## История версий
 
