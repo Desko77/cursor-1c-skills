@@ -292,18 +292,30 @@ $configDirNormalized = $ConfigDir.Replace('\', '/')
 
 # core.quotePath=false: with the git default a path with non-ASCII characters comes back
 # quoted and octal-escaped, Test-Path does not find it and the object silently drops out
-# of the load list. Output is read as UTF-8 regardless of the console code page.
+# of the load list. The output is decoded as UTF-8 explicitly through Process: the console
+# code page is not involved, and a process without a console (CI runner) decodes the same way.
 function Invoke-GitLines {
     param([string[]]$GitArgs)
-    $prevEncoding = [Console]::OutputEncoding
-    try {
-        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        $out = git -c core.quotePath=false @GitArgs 2>&1
-    } finally {
-        [Console]::OutputEncoding = $prevEncoding
+    $quoted = @('-c', 'core.quotePath=false') + $GitArgs | ForEach-Object {
+        if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
     }
-    if ($LASTEXITCODE -eq 0) { return @($out | ForEach-Object { "$_" }) }
-    return @()
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'git'
+    $psi.Arguments = $quoted -join ' '
+    $psi.WorkingDirectory = (Get-Location).Path
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $psi.CreateNoWindow = $true
+    try {
+        $proc = [System.Diagnostics.Process]::Start($psi)
+    } catch {
+        return @()
+    }
+    $out = $proc.StandardOutput.ReadToEnd()
+    $proc.WaitForExit()
+    if ($proc.ExitCode -ne 0) { return @() }
+    return @($out -split "`r?`n" | Where-Object { $_ -ne '' })
 }
 
 Push-Location $ConfigDir
@@ -380,8 +392,14 @@ foreach ($file in $changedFiles) {
                 if ($parts.Count -ge 2) {
                     $extDir = Join-Path (Join-Path $ConfigDir $parts[0]) "$($parts[1])\Ext"
                     if (Test-Path $extDir) {
+                        # The relative path is rebuilt from the object parts and the part inside Ext:
+                        # FullName is canonical (long form), while $ConfigDir keeps the spelling it was
+                        # given, for example a short 8.3 name of the temp folder, so prefix replacement
+                        # does not strip it and the absolute path would stay in the list.
+                        $extDirFull = (Get-Item -LiteralPath $extDir).FullName
                         Get-ChildItem -Path $extDir -Recurse -File | ForEach-Object {
-                            $extRelPath = $_.FullName.Replace("$ConfigDir\", '').Replace('\', '/')
+                            $inside = $_.FullName.Substring($extDirFull.Length).TrimStart('\', '/').Replace('\', '/')
+                            $extRelPath = "$($parts[0])/$($parts[1])/Ext/$inside"
                             if ($configFiles -notcontains $extRelPath) {
                                 $configFiles += $extRelPath
                             }
