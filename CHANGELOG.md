@@ -1,5 +1,38 @@
 # История версий
 
+## Обновление плагина AI-EDT до 0.2.55 - 2026-09-24
+
+Изменилась работа плагина (выпуски 0.2.54 и 0.2.55), набор `ai-edt-tools` и правило `mcp-tool-priority` обновлены под нее.
+
+- `infobase_admin operation=register_infobase` регистрирует существующую базу (`path` или `connectionString`) в списке EDT и связывает с проектом одним вызовом, с учетными данными базы.
+- Запись списка баз не отвязывает конфигурации запуска (`launchApplicationIds`); клиента `start_client` останавливает `launch_debugger action=terminate`.
+- `update_database` отказывает на `ConfigDumpInfo.xml` чужого формата, `sync_control syncOperation=rebuild_dump_info` перестраивает файл выгрузкой Конфигуратора; `dryRun` отвечает на месте и перечисляет непроверенное в `notCheckedInDryRun`.
+- `sync_control status` по каждой привязке, `mark_synchronized` для базы без базовой линии.
+- `config_io operation=export_infobase_objects` - объекты конфигурации базы в XML Конфигуратора.
+- `mxl_workshop operation=check_print_width`, `settingsWarnings` у записи настроек СКД, сужение обходов `moduleFqn` / `methodName` / `subsystemName`, `find` в справке фасадов.
+- `extension_workshop borrow_object includeChildren`, `adoptedFormAttributes` у пути данных формы расширения, `dependency_graph edgeKinds`.
+- `naparnik` - вопрос 1С:Напарнику из EDT (мост выключен по умолчанию; в режиме чтения доступен поиск по документации и ИТС в базе знаний сервиса, ответ без текста и без вызовов инструментов - отказ); строка в правиле-маршрутизаторе.
+- `vanessa`: доводы списка (`listKind`, `listName`, `column`, `columnValue`, `buttonTitle`) собирают действие в работающей 1С; кадр после действия - верхнее окно клиента тестирования (`frame-after-action.png`), не снимок экрана.
+- Тяжелые вызовы (обновление базы, в том числе перед запуском клиента, запуск Конфигуратора, создание базы) - не больше трех одновременно, отказ `503` с `Retry-After`.
+
+## Обновление плагина AI-EDT до 0.2.53 - 2026-09-22
+
+Изменилась работа плагина, набор `ai-edt-tools` обновлен под нее.
+
+- `debug_launch` / `launch_debugger action=launch` / `start_client`: доводы `clientType` (`thin`, `thick`, `web`) и `runMode` (`ordinary`, `managed`); конфигурация с основным режимом обычного приложения стартует в толстом клиенте, `/RunModeOrdinaryApplication` кладется в параметры базы на ссылке сеанса (список баз на диске не пишется), `clientType=thin` без `runMode=managed` у нее отвергается; ответ несет `clientType`, `clientTypeSource`, `runMode`, `runModeSource`, `runModeFlagState`, `runModeFlagScope`, `infobaseAdditionalParameters`.
+- `create_launch_config` привязывает базу в текущем контексте привязки проекта (в ветке у проекта под версионным контролем).
+- `sync_control` читает хранилище сигнатур в рабочей области (EDT 2026), затем в `%APPDATA%/.1cedt`; `index.idx` версионного формата читается и переписывается.
+- Другой бандл EDT добавляет плагину инструменты и модули OSGi-сервисами (`IMcpTool` со свойством `ru.aiedt.mcp.tool.writes`, `IModuleSourceProvider`); модули без файла читаются и пишутся по адресу инструментами модулей, ответы по индексу BSL заканчиваются строкой покрытия поставщика.
+
+## Обновление плагина AI-EDT до 0.2.52 - 2026-09-21
+
+Изменилась работа плагина (выпуски 0.2.51 и 0.2.52), набор `ai-edt-tools` обновлен под нее.
+
+- Новый фасад `git`: `status`, `branches`, `log`, `commit` (только названные `paths`, add-all отвергается; автор из конфигурации репозитория или `authorName`/`authorEmail`; `boundInfobase` у привязанной ветки), `checkout` (`branch`, `createBranch`; переход поверх незакоммиченных файлов отвергается с их списком). Записи гасятся пресетами как `git_commit` / `git_checkout`.
+- Отказ несет готовый следующий вызов в `helpHint` (`tool`, `arguments`): «проект не найден» - `project_admin operation=list_projects` с `suggestedProjectName`; «владелец не найден» - `insights operation=semantic_metadata_search`.
+- `tools/list` публикует `annotations` MCP (`readOnlyHint`, `idempotentHint`, `openWorldHint`) - только значения, отличные от умолчаний.
+- `content_assist` принимает пакет `positions` одним вызовом; `update_database refreshWorkspace` (по умолчанию включен) читает диск перед состоянием; `symbol_info computeTypes` отвечает `MODEL_MOVED` вместо недоотдачи типа; `GET /health` несет `projects`; Attach-запуск отвергает `waitForEndpoint`.
+
 ## 1.10.3 - 2026-09-18
 
 ### db-load-git
