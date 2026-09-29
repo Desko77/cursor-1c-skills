@@ -49,14 +49,15 @@ scaffold объектов, разбор чужих обработок, выгр�
 | Объекты метаданных | собрать из JSON, разобрать обратно в JSON, править реквизиты и табличные части | 6 |
 | Управляемые формы | собрать из DSL или по метаданным объекта, править, разобрать, проверить | 8 |
 | Расширения | создать, заимствовать объект, поставить перехватчик на метод, сверить с основной | 6 |
+| Ручное внесение правок | собрать инструкцию для Конфигуратора, когда править исходники нельзя | 1 |
 | Обработки и отчеты | собрать .epf и .erf из исходников и разобрать обратно | 10 |
-| Базы данных и хранилище | создать, выгрузить и загрузить .cf, .dt и XML, обновить, запустить, работать с хранилищем конфигурации | 12 |
-| Роли, подсистемы, макеты, СКД, XDTO | сборка и разбор своим DSL под каждый вид | 25 |
+| Базы данных и хранилище | создать, выгрузить и загрузить .cf, .dt и XML, обновить, запустить, управлять расширениями в базе, работать с хранилищем конфигурации | 13 |
+| Роли, подсистемы, макеты, СКД, XDTO | сборка и разбор своим DSL под каждый вид | 26 |
 | Веб-публикация и тестирование | опубликовать базу через Apache, прогнать сценарий в браузере | 5 |
 | БСП, 1С 7.7, обмены | справочник API БСП и поиск функций, разработка под 7.7, правила КД 2.0 и 3.1 | 8 |
-| Справочные и утилитарные | документация платформы, справочники API типовых, транскрибация, docx и xlsx | 26 |
+| Справочные и утилитарные | документация платформы, справочники API типовых, транскрибация, docx и xlsx, окружение агента | 27 |
 
-Полный перечень с описанием каждого скила - в разделе [Скилы](#скилы-115) ниже.
+Полный перечень с описанием каждого скила - в разделе [Скилы](#скилы-119) ниже.
 
 И **40 правил** (.mdc) - подключаются один раз и действуют во всех задачах, без напоминаний в каждом
 промпте:
@@ -207,7 +208,7 @@ Copy-Item -Path commands\* -Destination .cursor\commands\ -Recurse -Force
 
 Скилы спроектированы по слоям - базовые (генерация XML) работают без платформы, продвинутые требуют 1С или MCP.
 
-## Скилы (115)
+## Скилы (119)
 
 Начать проще всего с `1c-config-router`: он сам определяет, каким скилом или workflow
 решать задачу.
@@ -249,6 +250,8 @@ Copy-Item -Path commands\* -Destination .cursor\commands\ -Recurse -Force
 <tr><td><code>1c-cfe-diff</code></td><td>Анализ расширения</td></tr>
 <tr><td><code>1c-cfe-validate</code></td><td>Валидация расширения</td></tr>
 <tr><td><code>1c-cfe-full-cycle</code></td><td>Workflow: полный цикл создания расширения</td></tr>
+<tr><th colspan="2" align="left">Ручное внесение правок</th></tr>
+<tr><td><code>1c-change-package</code></td><td>Пакет ручного внесения правок: по двум версиям модулей - инструкция для Конфигуратора, что найти и на что заменить</td></tr>
 <tr><th colspan="2" align="left">Обработки и отчеты (epf-*, erf-*)</th></tr>
 <tr><td><code>1c-epf-scaffold</code></td><td>Создать пустую обработку</td></tr>
 <tr><td><code>1c-epf-add-form</code></td><td>Добавить форму к обработке</td></tr>
@@ -281,7 +284,8 @@ Copy-Item -Path commands\* -Destination .cursor\commands\ -Recurse -Force
 <tr><td><code>1c-template-add</code></td><td>Добавить макет к объекту</td></tr>
 <tr><td><code>1c-template-remove</code></td><td>Удалить макет</td></tr>
 <tr><th colspan="2" align="left">Роли (role-*)</th></tr>
-<tr><td><code>1c-role-compile</code></td><td>Создать роль из описания прав</td></tr>
+<tr><td><code>1c-role-compile</code></td><td>Создать роль из описания прав: права сверены с платформой 8.3.27, замыкание по зависимостям, флажки роли по стандарту #std532</td></tr>
+<tr><td><code>1c-role-edit</code></td><td>Точечная правка существующей роли: права, RLS, шаблоны, свойства</td></tr>
 <tr><td><code>1c-role-info</code></td><td>Анализ роли</td></tr>
 <tr><td><code>1c-role-validate</code></td><td>Валидация роли</td></tr>
 <tr><th colspan="2" align="left">СКД (skd-*)</th></tr>
@@ -291,7 +295,7 @@ Copy-Item -Path commands\* -Destination .cursor\commands\ -Recurse -Force
 <tr><td><code>1c-skd-info</code></td><td>Анализ СКД</td></tr>
 <tr><td><code>1c-skd-validate</code></td><td>Валидация СКД</td></tr>
 <tr><th colspan="2" align="left">Базы данных (db-*)</th></tr>
-<tr><td><code>1c-db-list</code></td><td>Управление реестром баз</td></tr>
+<tr><td><code>1c-db-list</code></td><td>Управление реестром баз. База с <code>"role": "prod"</code> защищена: изменяющие скилы db-* и хранилища без ключа <code>-AllowProd</code> отказывают</td></tr>
 <tr><td><code>1c-db-create</code></td><td>Создать информационную базу</td></tr>
 <tr><td><code>1c-db-dump-cf</code></td><td>Выгрузить конфигурацию в CF</td></tr>
 <tr><td><code>1c-db-dump-dt</code></td><td>Выгрузить всю ИБ в DT (полный бэкап)</td></tr>
@@ -301,6 +305,7 @@ Copy-Item -Path commands\* -Destination .cursor\commands\ -Recurse -Force
 <tr><td><code>1c-db-load-xml</code></td><td>Загрузить конфигурацию из XML</td></tr>
 <tr><td><code>1c-db-load-git</code></td><td>Загрузить изменения из Git</td></tr>
 <tr><td><code>1c-db-update</code></td><td>Обновить конфигурацию БД</td></tr>
+<tr><td><code>1c-db-cfe-admin</code></td><td>Расширения в базе: список, проверка применимости, свойства, удаление</td></tr>
 <tr><td><code>1c-db-run</code></td><td>Запустить 1С:Предприятие</td></tr>
 <tr><td><code>1c-storage-ops</code></td><td>Хранилище конфигурации: отчет по версиям, захват и снятие захвата, обновление, помещение, выгрузка, подключение и отключение базы</td></tr>
 <tr><th colspan="2" align="left">БСП</th></tr>
@@ -320,7 +325,8 @@ Copy-Item -Path commands\* -Destination .cursor\commands\ -Recurse -Force
 <tr><td><code>1c-mcp-toolkit</code></td><td>Прямой HTTP API к живой запущенной базе 1С (запросы, BSL-код, метаданные, журнал)</td></tr>
 <tr><td><code>1c-platform-docs</code></td><td>Поиск по документации API платформы</td></tr>
 <tr><td><code>1c-query-validate</code></td><td>Проверка текста запроса по выгрузке: существуют ли таблицы, табличные части, виртуальные таблицы регистров и поля</td></tr>
-<tr><td><code>1c-bsl-validate</code></td><td>Проверка вызовов общих модулей в BSL по выгрузке: существует ли модуль и экспортный ли метод</td></tr>
+<tr><td><code>1c-bsl-validate</code></td><td>Проверка вызовов общих модулей в BSL по выгрузке: существует ли модуль и экспортный ли метод; режим <code>-Catalog</code> - текстовый lint модулей по каталогу дефектов (реестр правил, строка EVIDENCE)</td></tr>
+<tr><td><code>1c-code-review</code></td><td>Ревью BSL по каталогу дефектов: карточки с триггером, законной формой и важностью (Critical/Major/Minor), генерируемый индекс, матрица детекторов по средам (references/detectors.md), гейтовый конфиг bsl-language-server (assets/bsl-ls-gate.json), отчет с идентификаторами находок и ключом локации</td></tr>
 <tr><td><code>1c-query-optimization</code></td><td>Продвинутая оптимизация запросов</td></tr>
 <tr><td><code>1c-help-manage</code></td><td>Встроенная справка объектов 1С</td></tr>
 <tr><td><code>composing-1c-queries</code></td><td>Руководство по языку запросов 1С</td></tr>

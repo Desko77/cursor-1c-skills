@@ -16,6 +16,27 @@ param(
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# Сообщение о рассинхроне версии формата части и дескриптора.
+function Format-VersionMismatchMessage {
+	param([string]$PartVersion, [string]$DescriptorVersion, [string]$PartLabel, [string]$DescriptorLabel)
+	return "Format version '$PartVersion' does not match descriptor version '$DescriptorVersion' ($PartLabel vs $DescriptorLabel)"
+}
+
+# Версия атрибута version корневого элемента XML.
+function Get-XmlRootVersion {
+	param([string]$Path)
+	if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return "" }
+	try {
+		$doc = New-Object System.Xml.XmlDocument
+		$doc.PreserveWhitespace = $false
+		$doc.Load($Path)
+		if (-not $doc.DocumentElement) { return "" }
+		return [string]$doc.DocumentElement.GetAttribute("version")
+	} catch {
+		return ""
+	}
+}
+
 # --- 1. Known rights per object type ---
 
 # Типы метаданных, у которых прав в роли нет вовсе (таблица типов, docs/1c-configuration-spec.md).
@@ -70,7 +91,8 @@ $script:knownRights = @{
 	)
 	"AccumulationRegister" = @("Read","Update","View","Edit","TotalsControl")
 	"AccountingRegister" = @("Read","Update","View","Edit","TotalsControl")
-	"CalculationRegister" = @("Read","View")
+	# Замер 8.3.27: у регистра расчета есть Update и Edit, а TotalsControl - нет.
+	"CalculationRegister" = @("Read","Update","View","Edit")
 	"Constant" = @(
 		"Read","Update","View","Edit",
 		"ReadDataHistory","ViewDataHistory","UpdateDataHistory",
@@ -80,12 +102,13 @@ $script:knownRights = @{
 	"ChartOfAccounts" = @(
 		"Read","Insert","Update","Delete","View","Edit","InputByString",
 		"InteractiveInsert","InteractiveSetDeletionMark","InteractiveClearDeletionMark",
-		"InteractiveDelete",
+		"InteractiveDelete","InteractiveDeleteMarked",
 		"InteractiveDeletePredefinedData","InteractiveSetDeletionMarkPredefinedData",
 		"InteractiveClearDeletionMarkPredefinedData","InteractiveDeleteMarkedPredefinedData",
 		"ReadDataHistory","ReadDataHistoryOfMissingData",
 		"UpdateDataHistory","UpdateDataHistoryOfMissingData",
-		"UpdateDataHistorySettings","UpdateDataHistoryVersionComment"
+		"UpdateDataHistorySettings","UpdateDataHistoryVersionComment",
+		"ViewDataHistory","EditDataHistoryVersionComment","SwitchToDataHistoryVersion"
 	)
 	"ChartOfCharacteristicTypes" = @(
 		"Read","Insert","Update","Delete","View","Edit","InputByString",
@@ -101,9 +124,13 @@ $script:knownRights = @{
 	"ChartOfCalculationTypes" = @(
 		"Read","Insert","Update","Delete","View","Edit","InputByString",
 		"InteractiveInsert","InteractiveSetDeletionMark","InteractiveClearDeletionMark",
-		"InteractiveDelete",
+		"InteractiveDelete","InteractiveDeleteMarked",
 		"InteractiveDeletePredefinedData","InteractiveSetDeletionMarkPredefinedData",
-		"InteractiveClearDeletionMarkPredefinedData","InteractiveDeleteMarkedPredefinedData"
+		"InteractiveClearDeletionMarkPredefinedData","InteractiveDeleteMarkedPredefinedData",
+		"ReadDataHistory","ViewDataHistory","UpdateDataHistory",
+		"ReadDataHistoryOfMissingData","UpdateDataHistoryOfMissingData",
+		"UpdateDataHistorySettings","UpdateDataHistoryVersionComment",
+		"EditDataHistoryVersionComment","SwitchToDataHistoryVersion"
 	)
 	"ExchangePlan" = @(
 		"Read","Insert","Update","Delete","View","Edit","InputByString",
@@ -117,12 +144,20 @@ $script:knownRights = @{
 	"BusinessProcess" = @(
 		"Read","Insert","Update","Delete","View","Edit","InputByString",
 		"Start","InteractiveInsert","InteractiveSetDeletionMark","InteractiveClearDeletionMark",
-		"InteractiveDelete","InteractiveActivate","InteractiveStart"
+		"InteractiveDelete","InteractiveDeleteMarked","InteractiveActivate","InteractiveStart",
+		"ReadDataHistory","ReadDataHistoryOfMissingData",
+		"UpdateDataHistory","UpdateDataHistoryOfMissingData",
+		"UpdateDataHistorySettings","UpdateDataHistoryVersionComment",
+		"ViewDataHistory","EditDataHistoryVersionComment","SwitchToDataHistoryVersion"
 	)
 	"Task" = @(
 		"Read","Insert","Update","Delete","View","Edit","InputByString",
 		"Execute","InteractiveInsert","InteractiveSetDeletionMark","InteractiveClearDeletionMark",
-		"InteractiveDelete","InteractiveActivate","InteractiveExecute"
+		"InteractiveDelete","InteractiveDeleteMarked","InteractiveActivate","InteractiveExecute",
+		"ReadDataHistory","ReadDataHistoryOfMissingData",
+		"UpdateDataHistory","UpdateDataHistoryOfMissingData",
+		"UpdateDataHistorySettings","UpdateDataHistoryVersionComment",
+		"ViewDataHistory","EditDataHistoryVersionComment","SwitchToDataHistoryVersion"
 	)
 	"DataProcessor" = @("Use","View")
 	"Report" = @("Use","View")
@@ -132,9 +167,15 @@ $script:knownRights = @{
 	"FilterCriterion" = @("View")
 	"DocumentJournal" = @("Read","View")
 	"Sequence" = @("Read","Update")
-	"WebService" = @("Use")
-	"HTTPService" = @("Use")
-	"IntegrationService" = @("Use")
+	# Замер 8.3.27: у самих веб- и HTTP-сервисов прав нет - платформа отбрасывает блок
+	# при загрузке. Право Use живет на операции (WebService...Operation.*) и методе
+	# (HTTPService...URLTemplate.*.Method.*).
+	"WebService" = @()
+	"HTTPService" = @()
+	# Замер 8.3.27: у самого сервиса интеграции прав нет - платформа отбрасывает блок
+	# при загрузке. Право Use живет на канале
+	# (IntegrationService...IntegrationServiceChannel.*).
+	"IntegrationService" = @()
 	"SessionParameter" = @("Get","Set")
 	"CommonAttribute" = @("View","Edit")
 }
@@ -146,6 +187,8 @@ $script:nestedRights = @("View","Edit")
 $script:nestedRightsByKind = @{
 	"Attribute" = @("View","Edit")
 	"TabularSection" = @("View","Edit")
+	"StandardAttribute" = @("View","Edit")
+	"Resource" = @("View","Edit")
 	"Field" = @("View","Edit")
 	"Command" = @("View")
 	"Subsystem" = @("View")
@@ -189,6 +232,47 @@ function Report-Error {
 	Out-Line "[ERROR] $msg"
 	if ($script:errors -ge $MaxErrors) {
 		$script:stopped = $true
+	}
+}
+
+function Get-FieldParentName([string]$ObjectName) {
+	# Имя объекта-владельца, если блок прав относится к реквизиту или табличной части.
+	$parts = @($ObjectName -split '\.')
+	if ($parts.Count -lt 4) { return '' }
+	$fieldKinds = @('Attribute', 'TabularSection', 'StandardAttribute')
+	for ($i = 2; $i -lt $parts.Count; $i += 2) {
+		if ($parts[$i] -in $fieldKinds) { return "$($parts[0]).$($parts[1])" }
+	}
+	return ''
+}
+
+function Report-Std532([string]$RoleName, $FlagValues, $ObjectNames) {
+	# Предупреждения стандарта #std532 по флажкам роли и правам на поля.
+	$fullAccess = @('ПолныеПрава', 'FullAccess')
+	if ($FlagValues['setForNewObjects'] -eq 'true' -and $RoleName -notin $fullAccess) {
+		Report-Warn "${RoleName}: setForNewObjects=true, стандарт #std532 допускает этот флажок только у роли ПолныеПрава или FullAccess"
+	}
+	$parents = @{}
+	$fieldParents = New-Object System.Collections.Generic.List[string]
+	foreach ($name in @($ObjectNames)) {
+		$parent = Get-FieldParentName $name
+		if ($parent) {
+			$fieldParents.Add($parent)
+		} else {
+			$parts = @($name -split '\.')
+			if ($parts.Count -le 2) { $parents[$name] = $true }
+		}
+	}
+	$seen = @{}
+	foreach ($parent in $fieldParents) {
+		if ($parents.ContainsKey($parent) -or $seen.ContainsKey($parent)) { continue }
+		$seen[$parent] = $true
+		if ($FlagValues['independentRightsOfChildObjects'] -eq 'false') {
+			Report-Warn "${parent}: права на поля без прав на объект при independentRightsOfChildObjects=false (#std532)"
+		}
+		if ($FlagValues['setForAttributesByDefault'] -eq 'true') {
+			Report-Warn "${parent}: права только на поля при setForAttributesByDefault=true (#std532)"
+		}
 	}
 }
 
@@ -292,13 +376,22 @@ if ($root.LocalName -ne "Rights") {
 	Report-OK "Root element: <Rights> with correct namespace"
 }
 
+$rightsVersion = $root.GetAttribute("version")
+$roleVersion = Get-XmlRootVersion $MetadataPath
+if ($rightsVersion -and $roleVersion -and ($rightsVersion -ne $roleVersion)) {
+	$roleLabel = [System.IO.Path]::GetFileName($MetadataPath)
+	Report-Error (Format-VersionMismatchMessage $rightsVersion $roleVersion "Rights.xml" $roleLabel)
+}
+
 # 3c. Global flags
 $flagNames = @("setForNewObjects","setForAttributesByDefault","independentRightsOfChildObjects")
+$flagValues = @{}
 $flagsFound = 0
 foreach ($fn in $flagNames) {
 	$node = $root.GetElementsByTagName($fn, $rightsNs)
 	if ($node.Count -gt 0) {
 		$val = $node[0].InnerText
+		$flagValues[$fn] = $val
 		if ($val -ne "true" -and $val -ne "false") {
 			Report-Warn "$fn = '$val' (expected 'true' or 'false')"
 		}
@@ -598,6 +691,9 @@ if ($IndexPath) {
 		}
 	}
 }
+
+# --- 5b. Стандарт #std532 ---
+Report-Std532 $inferredRoleName $flagValues $rightsObjectNames
 
 # --- 6. Summary ---
 

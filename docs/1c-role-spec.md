@@ -385,7 +385,9 @@ Subsystem.Администрирование.Subsystem.Пользователи
 | Право | Описание |
 |-------|----------|
 | `Read` | Чтение |
+| `Update` | Изменение |
 | `View` | Просмотр |
+| `Edit` | Редактирование |
 
 #### Constant
 
@@ -405,6 +407,8 @@ Subsystem.Администрирование.Subsystem.Пользователи
 
 #### ChartOfAccounts
 
+Совпадает с набором прав ChartOfCharacteristicTypes:
+
 | Право | Описание |
 |-------|----------|
 | `Read` | Чтение |
@@ -418,6 +422,7 @@ Subsystem.Администрирование.Subsystem.Пользователи
 | `InteractiveSetDeletionMark` | Пометка удаления |
 | `InteractiveClearDeletionMark` | Снятие пометки удаления |
 | `InteractiveDelete` | Интерактивное удаление |
+| `InteractiveDeleteMarked` | Интерактивное удаление помеченных |
 | `InteractiveDeletePredefinedData` | Удаление предопределенных |
 | `InteractiveSetDeletionMarkPredefinedData` | Пометка удаления предопределенных |
 | `InteractiveClearDeletionMarkPredefinedData` | Снятие пометки удаления предопределенных |
@@ -428,37 +433,17 @@ Subsystem.Администрирование.Subsystem.Пользователи
 | `UpdateDataHistoryOfMissingData` | Обновление истории отсутствующих данных |
 | `UpdateDataHistorySettings` | Настройки истории данных |
 | `UpdateDataHistoryVersionComment` | Обновление комментария версии |
+| `ViewDataHistory` | Просмотр истории данных |
+| `EditDataHistoryVersionComment` | Редактирование комментария версии |
+| `SwitchToDataHistoryVersion` | Переход к версии истории данных |
 
 #### ChartOfCharacteristicTypes
 
-Аналогично ChartOfAccounts, плюс:
-
-| Право | Описание |
-|-------|----------|
-| `InteractiveDeleteMarked` | Интерактивное удаление помеченных |
-| `EditDataHistoryVersionComment` | Редактирование комментария версии |
-| `SwitchToDataHistoryVersion` | Переход к версии |
-| `ViewDataHistory` | Просмотр истории данных |
+Тот же набор прав, что у ChartOfAccounts (см. таблицу выше).
 
 #### ChartOfCalculationTypes
 
-| Право | Описание |
-|-------|----------|
-| `Read` | Чтение |
-| `Insert` | Добавление |
-| `Update` | Изменение |
-| `Delete` | Удаление |
-| `View` | Просмотр |
-| `Edit` | Редактирование |
-| `InputByString` | Ввод по строке |
-| `InteractiveInsert` | Интерактивное добавление |
-| `InteractiveSetDeletionMark` | Пометка удаления |
-| `InteractiveClearDeletionMark` | Снятие пометки удаления |
-| `InteractiveDelete` | Интерактивное удаление |
-| `InteractiveDeletePredefinedData` | Удаление предопределенных |
-| `InteractiveSetDeletionMarkPredefinedData` | Пометка удаления предопределенных |
-| `InteractiveClearDeletionMarkPredefinedData` | Снятие пометки предопределенных |
-| `InteractiveDeleteMarkedPredefinedData` | Удаление помеченных предопределенных |
+Тот же набор прав, что у ChartOfAccounts (см. таблицу выше), включая блок `*DataHistory*`.
 
 #### ExchangePlan
 
@@ -488,41 +473,25 @@ Subsystem.Администрирование.Subsystem.Пользователи
 
 #### BusinessProcess
 
+Базовый набор Catalog (см. таблицу выше, без предопределенных) плюс:
+
 | Право | Описание |
 |-------|----------|
-| `Read` | Чтение |
-| `Insert` | Добавление |
-| `Update` | Изменение |
-| `Delete` | Удаление |
-| `View` | Просмотр |
-| `Edit` | Редактирование |
-| `InputByString` | Ввод по строке |
 | `Start` | Старт |
-| `InteractiveInsert` | Интерактивное добавление |
-| `InteractiveSetDeletionMark` | Пометка удаления |
-| `InteractiveClearDeletionMark` | Снятие пометки удаления |
-| `InteractiveDelete` | Интерактивное удаление |
 | `InteractiveActivate` | Интерактивная активация |
 | `InteractiveStart` | Интерактивный старт |
+| блок `*DataHistory*` (9 прав, как у Catalog) | История данных |
 
 #### Task
 
+Базовый набор Catalog (см. таблицу выше, без предопределенных) плюс:
+
 | Право | Описание |
 |-------|----------|
-| `Read` | Чтение |
-| `Insert` | Добавление |
-| `Update` | Изменение |
-| `Delete` | Удаление |
-| `View` | Просмотр |
-| `Edit` | Редактирование |
-| `InputByString` | Ввод по строке |
 | `Execute` | Выполнение |
-| `InteractiveInsert` | Интерактивное добавление |
-| `InteractiveSetDeletionMark` | Пометка удаления |
-| `InteractiveClearDeletionMark` | Снятие пометки удаления |
-| `InteractiveDelete` | Интерактивное удаление |
 | `InteractiveActivate` | Интерактивная активация |
 | `InteractiveExecute` | Интерактивное выполнение |
+| блок `*DataHistory*` (9 прав, как у Catalog) | История данных |
 
 #### Простые типы (одно-два права)
 
@@ -536,11 +505,11 @@ Subsystem.Администрирование.Subsystem.Пользователи
 | `FilterCriterion` | View |
 | `DocumentJournal` | Read, View |
 | `Sequence` | Read, Update |
-| `WebService` | Use |
-| `HTTPService` | Use |
-| `IntegrationService` | Use |
 | `SessionParameter` | Get, Set |
 | `CommonAttribute` | View, Edit |
+| `WebService` | прав нет; Use - только на операции `WebService.*.Operation.*` |
+| `HTTPService` | прав нет; Use - только на методе `HTTPService.*.URLTemplate.*.Method.*` |
+| `IntegrationService` | прав нет; Use на канале `IntegrationService.*.IntegrationServiceChannel.*` |
 
 #### Типы объектов БЕЗ прав в ролях
 
@@ -648,6 +617,37 @@ Subsystem.Администрирование.Subsystem.Пользователи
 | `Resource` | InformationRegister, AccumulationRegister, AccountingRegister | View, Edit |
 | `Command` | Catalog, Document, DataProcessor, Report, *Register, DocumentJournal, ExchangePlan, BusinessProcess, Task | View |
 | `AddressingAttribute` | Task | View, Edit |
+
+---
+
+## Замыкание прав при загрузке
+
+Платформа при загрузке роли дописывает права, без которых заданные не действуют: файл роли,
+содержащий ровно заданный набор, расходится с базой после первой загрузки. Поведение измерено
+круговым прогоном на 8.3.27.2214: роль с единственным правом R загружается в пустую базу и
+выгружается обратно; набор в выгрузке - замыкание R.
+
+Правила замыкания глобальны, импликация действует только на права, существующие у типа.
+Отклонения: у ChartOfAccounts блок `*DataHistory*` не тянет Read; у InformationRegister
+UpdateDataHistoryOfMissingData не влечет ReadDataHistoryOfMissingData; у DataProcessor и Report
+View влечет Use. Полные таблицы правил - в `skills/1c-role-compile/scripts/role-compile.py`
+(`GLOBAL_RIGHT_IMPL`, `RIGHT_IMPL_BY_TYPE`).
+
+Свойства, проверенные замером:
+
+- Замыкание одноименному объединению: выгрузка набора прав равна объединению выгрузок каждого
+  права по отдельности (сверено по всем 25 типам стенда).
+- Выгрузка объекта верхнего уровня содержит только включенные права: `value=false` платформа не пишет. Для `View` и `Edit` реквизита, табличной части и стандартного реквизита действует отдельный замер ниже.
+- Права в выгрузке идут в порядке платформы, едином по всем типам, а не в порядке файла.
+- Противоречие (`Edit=true` и `Read=false` в одном блоке) - платформа отбрасывает весь блок
+  объекта при загрузке.
+- Блок из одних явных запретов (`Read=false` без включенных прав) платформа тоже отбрасывает.
+- Вложенные права (реквизиты, измерения) замыкания не имеют.
+- Замер 8.3.27.2214, права `View` и `Edit` у `Attribute`, `TabularSection` и `StandardAttribute`:
+  выгрузка оставляет право, только если оно не совпадает с `setForAttributesByDefault`.
+  При `true` явный `true` пропадает, `false` остается. При `false` явный `false` пропадает,
+  `true` остается. Пустой блок не пишется. `independentRightsOfChildObjects` и наличие прав
+  на сам объект состав выгрузки не меняют. Незаданное право в выгрузке не появляется.
 
 ---
 
@@ -843,3 +843,5 @@ RLS применяется к правам `Read`, `Update`, `Insert`, `Delete` 
 | 8.3.27 | 2.20 | 2.20 | Только номер версии, структура идентична |
 
 Namespace Rights.xml (`http://v8.1c.ru/8.2/roles`) и namespace метаданных (`http://v8.1c.ru/8.3/MDClasses`) не менялись.
+
+`version` в `Rights.xml` совпадает с `version` в XML роли. Расхождение отвергается при загрузке.

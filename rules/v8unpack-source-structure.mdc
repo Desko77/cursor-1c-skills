@@ -1,5 +1,6 @@
 ---
 description: "Структура исходников v8unpack"
+globs: ["**/*.obj.bsl", "**/*.mgr.bsl", "**/*.elem.json"]
 alwaysApply: false
 ---
 

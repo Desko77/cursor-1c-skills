@@ -295,6 +295,20 @@ function createWorkspace(fixturePath, readOnly) {
   return { path: tmp, readOnly: false };
 }
 
+// cwd "workDir" - корень рабочего каталога, "workDir/<путь>" - его подкаталог.
+// Подкаталог нужен кейсу, где в имени каталога есть символы маски.
+function resolveExecCwd(cwdSpec, workDir) {
+  if (!cwdSpec || !workDir) return undefined;
+  if (cwdSpec === 'workDir') return workDir;
+  let rel = null;
+  if (cwdSpec.startsWith('workDir/')) rel = cwdSpec.slice('workDir/'.length);
+  else if (cwdSpec.startsWith('workDir\\')) rel = cwdSpec.slice('workDir\\'.length);
+  if (!rel) return undefined;
+  const full = join(workDir, rel);
+  mkdirSync(full, { recursive: true });
+  return full;
+}
+
 function cleanupWorkspace(ws) {
   if (ws.readOnly) return;
   // --keep-work оставляет рабочий каталог на диске. Нужен, когда снапшот и вывод расходятся
@@ -461,8 +475,8 @@ function checkFileContains(workDir, spec, expectPresent) {
 // который молча ничего не проверяет (так уже было с 9 кейсами meta-edit) —
 // поэтому он ошибка, а не игнор.
 const KNOWN_EXPECT_KEYS = new Set([
-  'files', 'filesAbsent', 'stdoutContains', 'stdoutNotContains', 'stderrContains', 'preserves',
-  'fileContains', 'fileNotContains', 'filesEqual',
+  'files', 'filesAbsent', 'stdoutContains', 'stdoutNotContains', 'stderrContains', 'stderrNotContains',
+  'preserves', 'fileContains', 'fileNotContains', 'filesEqual',
 ]);
 
 function checkExpectKeys(caseData) {
@@ -802,6 +816,20 @@ async function runCaseAsync(testCase, opts) {
           if (step.writeFile.executable) chmodSync(wfPath, 0o755);
           continue;
         }
+        // editFile step - подстановочная замена в уже записанном файле.
+        if (step.editFile) {
+          const raw = String(step.editFile).replace('{workDir}', workDir);
+          const abs = (raw.includes(':') || raw.startsWith('/') || raw.startsWith('\\'))
+            ? raw : join(workDir, raw);
+          let txt = readFileSync(abs, 'utf8');
+          const needle = step.replace ?? '';
+          if (!needle || !txt.includes(needle)) {
+            throw new Error(`preRun editFile: pattern not found in ${step.editFile}`);
+          }
+          txt = txt.replace(needle, step.with ?? '');
+          writeFileSync(abs, txt, 'utf8');
+          continue;
+        }
         // git step - команда git в workDir: кейсы навыков, читающих изменения из репозитория,
         // без него не воспроизвести. Личность коммитера задается здесь, чтобы прогон не зависел
         // от глобальной настройки машины.
@@ -849,7 +877,7 @@ async function runCaseAsync(testCase, opts) {
     const { scriptPath, args } = buildArgs(skillConfig, caseData, workDir, inputFile, opts.runtime);
     let stdout = '', stderr = '', exitCode = 0;
     try {
-      const execCwd = (caseData.cwd || skillConfig.cwd) === 'workDir' ? workDir : undefined;
+      const execCwd = resolveExecCwd(caseData.cwd || skillConfig.cwd, workDir);
       ({ stdout, stderr } = await execSkillAsync(opts.runtime, scriptPath, args, execCwd));
     } catch (e) {
       exitCode = e.status ?? 1;
@@ -908,6 +936,15 @@ async function runCaseAsync(testCase, opts) {
           if (!stderr.includes(needle)) errors.push(`stderr does not contain "${needle}"`);
         }
       }
+      // Симметрия к stdoutNotContains. Нужна там, где проверяемое в тексте не видно:
+      // CRLF вместо LF в stderr на сравнении строк неотличим, а байты у портов разные.
+      if (caseData.expect?.stderrNotContains) {
+        const needles = Array.isArray(caseData.expect.stderrNotContains)
+          ? caseData.expect.stderrNotContains : [caseData.expect.stderrNotContains];
+        for (const needle of needles) {
+          if (stderr.includes(needle)) errors.push(`stderr unexpectedly contains "${needle}"`);
+        }
+      }
       // Отсутствие файла — тоже утверждение, и нужно оно чаще всего НЕГАТИВНОМУ кейсу:
       // «отказ произошёл до записи». В позитивной ветке (где живёт expect.files) такой
       // проверки не было бы ровно там, где она единственная содержательная.
@@ -955,7 +992,7 @@ async function runCaseAsync(testCase, opts) {
       if (errors.length === 0 && caseData.idempotent && !workspace.readOnly) {
         const before = snapshotWorkDirBytes(workDir);
         try {
-          const execCwd = (caseData.cwd || skillConfig.cwd) === 'workDir' ? workDir : undefined;
+          const execCwd = resolveExecCwd(caseData.cwd || skillConfig.cwd, workDir);
           await execSkillAsync(opts.runtime, scriptPath, args, execCwd);
         } catch (e) {
           errors.push(`Idempotency rerun failed: exitCode=${e.status}\nstderr: ${(e.stderr || '').substring(0, 300)}`);
@@ -1077,7 +1114,7 @@ function runCase(testCase, opts) {
     let stdout = '', stderr = '', exitCode = 0;
 
     try {
-      const execCwd = (caseData.cwd || skillConfig.cwd) === 'workDir' ? workDir : undefined;
+      const execCwd = resolveExecCwd(caseData.cwd || skillConfig.cwd, workDir);
       stdout = execSkillRaw(opts.runtime, scriptPath, args, execCwd);
     } catch (e) {
       exitCode = e.status ?? 1;
@@ -1148,6 +1185,15 @@ function runCase(testCase, opts) {
           if (!stderr.includes(needle)) errors.push(`stderr does not contain "${needle}"`);
         }
       }
+      // Симметрия к stdoutNotContains. Нужна там, где проверяемое в тексте не видно:
+      // CRLF вместо LF в stderr на сравнении строк неотличим, а байты у портов разные.
+      if (caseData.expect?.stderrNotContains) {
+        const needles = Array.isArray(caseData.expect.stderrNotContains)
+          ? caseData.expect.stderrNotContains : [caseData.expect.stderrNotContains];
+        for (const needle of needles) {
+          if (stderr.includes(needle)) errors.push(`stderr unexpectedly contains "${needle}"`);
+        }
+      }
       // Отсутствие файла — тоже утверждение, и нужно оно чаще всего НЕГАТИВНОМУ кейсу:
       // «отказ произошёл до записи». В позитивной ветке (где живёт expect.files) такой
       // проверки не было бы ровно там, где она единственная содержательная.
@@ -1192,7 +1238,7 @@ function runCase(testCase, opts) {
       if (errors.length === 0 && caseData.idempotent && !workspace.readOnly) {
         const before = snapshotWorkDirBytes(workDir);
         try {
-          const execCwd = (caseData.cwd || skillConfig.cwd) === 'workDir' ? workDir : undefined;
+          const execCwd = resolveExecCwd(caseData.cwd || skillConfig.cwd, workDir);
           execSkillRaw(opts.runtime, scriptPath, args, execCwd);
         } catch (e) {
           errors.push(`Idempotency rerun failed: exitCode=${e.status}\nstderr: ${(e.stderr || '').substring(0, 300)}`);

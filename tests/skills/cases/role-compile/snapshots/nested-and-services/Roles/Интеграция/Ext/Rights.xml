@@ -25,17 +25,6 @@
 		</right>
 	</object>
 	<object>
-		<name>Catalog.Товары.Attribute.Цена</name>
-		<right>
-			<name>View</name>
-			<value>true</value>
-		</right>
-		<right>
-			<name>Edit</name>
-			<value>true</value>
-		</right>
-	</object>
-	<object>
 		<name>Subsystem.Продажи.Subsystem.Опт</name>
 		<right>
 			<name>View</name>
@@ -56,11 +45,11 @@
 	<object>
 		<name>ExternalDataSource.Источник</name>
 		<right>
-			<name>Use</name>
+			<name>Administration</name>
 			<value>true</value>
 		</right>
 		<right>
-			<name>Administration</name>
+			<name>Use</name>
 			<value>true</value>
 		</right>
 	</object>

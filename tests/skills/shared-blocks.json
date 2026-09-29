@@ -62,6 +62,7 @@
           "1c-meta-remove",
           "1c-mxl-compile",
           "1c-role-compile",
+          "1c-role-edit",
           "1c-skd-compile",
           "1c-skd-edit",
           "1c-subsystem-compile",
@@ -69,6 +70,38 @@
           "1c-template-add",
           "1c-xdto-compile",
           "1c-xdto-edit"
+        ]
+      }
+    },
+    "prod-guard": {
+      "описание": "Защита боевой базы: отказ изменяющей операции на базе с ролью prod",
+      "ps1": {
+        "маркер": "# --- Защита боевой базы (общий блок, версия 2) ---",
+        "конец": "# --- Конец общего блока защиты боевой базы ---",
+        "вызов": "Assert-InfoBaseMutable",
+        "эталон": "1c-db-load-cf",
+        "потребители": [
+          "1c-db-cfe-admin",
+          "1c-db-load-cf",
+          "1c-db-load-dt",
+          "1c-db-load-git",
+          "1c-db-load-xml",
+          "1c-db-update",
+          "1c-storage-ops"
+        ]
+      },
+      "py": {
+        "маркер": "# --- Защита боевой базы (общий блок, версия 2) ---",
+        "конец": "# --- Конец общего блока защиты боевой базы ---",
+        "вызов": "assert_info_base_mutable",
+        "эталон": "1c-db-load-cf",
+        "потребители": [
+          "1c-db-cfe-admin",
+          "1c-db-load-cf",
+          "1c-db-load-dt",
+          "1c-db-load-git",
+          "1c-db-load-xml",
+          "1c-db-update"
         ]
       }
     },
@@ -105,6 +138,7 @@
         "вызов": "Show-PlatformOutput",
         "эталон": "1c-db-create",
         "потребители": [
+          "1c-db-cfe-admin",
           "1c-db-create",
           "1c-epf-build"
         ]
@@ -115,6 +149,7 @@
         "вызов": "show_platform_output",
         "эталон": "1c-db-create",
         "потребители": [
+          "1c-db-cfe-admin",
           "1c-db-create",
           "1c-epf-build"
         ]
@@ -142,6 +177,29 @@
           "1c-form-decompile",
           "1c-mxl-decompile",
           "1c-skd-decompile"
+        ]
+      }
+    },
+    "role-rights-table": {
+      "описание": "Таблица прав, замыкание по зависимостям и канонический порядок",
+      "ps1": {
+        "маркер": "# --- Таблица прав и замыкание (общий блок, версия 2) ---",
+        "конец": "# --- Конец общего блока таблицы прав и замыкания ---",
+        "вызов": "Close-Rights",
+        "эталон": "1c-role-compile",
+        "потребители": [
+          "1c-role-compile",
+          "1c-role-edit"
+        ]
+      },
+      "py": {
+        "маркер": "# --- Таблица прав и замыкание (общий блок, версия 2) ---",
+        "конец": "# --- Конец общего блока таблицы прав и замыкания ---",
+        "вызов": "close_rights",
+        "эталон": "1c-role-compile",
+        "потребители": [
+          "1c-role-compile",
+          "1c-role-edit"
         ]
       }
     }

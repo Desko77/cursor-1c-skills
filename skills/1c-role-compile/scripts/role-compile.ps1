@@ -176,6 +176,7 @@ function Esc-Xml {
 	return $s.Replace('&','&amp;').Replace('<','&lt;').Replace('>','&gt;').Replace('"','&quot;')
 }
 
+# --- Таблица прав и замыкание (общий блок, версия 2) ---
 # --- 3. Russian synonyms → canonical English names ---
 
 $script:typeAliases = @{
@@ -328,7 +329,8 @@ $script:knownRights = @{
 	)
 	"AccumulationRegister" = @("Read","Update","View","Edit","TotalsControl")
 	"AccountingRegister" = @("Read","Update","View","Edit","TotalsControl")
-	"CalculationRegister" = @("Read","View")
+	# Замер 8.3.27: у регистра расчета есть Update и Edit, а TotalsControl - нет.
+	"CalculationRegister" = @("Read","Update","View","Edit")
 	"Constant" = @(
 		"Read","Update","View","Edit",
 		"ReadDataHistory","ViewDataHistory","UpdateDataHistory",
@@ -338,12 +340,13 @@ $script:knownRights = @{
 	"ChartOfAccounts" = @(
 		"Read","Insert","Update","Delete","View","Edit","InputByString",
 		"InteractiveInsert","InteractiveSetDeletionMark","InteractiveClearDeletionMark",
-		"InteractiveDelete",
+		"InteractiveDelete","InteractiveDeleteMarked",
 		"InteractiveDeletePredefinedData","InteractiveSetDeletionMarkPredefinedData",
 		"InteractiveClearDeletionMarkPredefinedData","InteractiveDeleteMarkedPredefinedData",
 		"ReadDataHistory","ReadDataHistoryOfMissingData",
 		"UpdateDataHistory","UpdateDataHistoryOfMissingData",
-		"UpdateDataHistorySettings","UpdateDataHistoryVersionComment"
+		"UpdateDataHistorySettings","UpdateDataHistoryVersionComment",
+		"ViewDataHistory","EditDataHistoryVersionComment","SwitchToDataHistoryVersion"
 	)
 	"ChartOfCharacteristicTypes" = @(
 		"Read","Insert","Update","Delete","View","Edit","InputByString",
@@ -359,9 +362,13 @@ $script:knownRights = @{
 	"ChartOfCalculationTypes" = @(
 		"Read","Insert","Update","Delete","View","Edit","InputByString",
 		"InteractiveInsert","InteractiveSetDeletionMark","InteractiveClearDeletionMark",
-		"InteractiveDelete",
+		"InteractiveDelete","InteractiveDeleteMarked",
 		"InteractiveDeletePredefinedData","InteractiveSetDeletionMarkPredefinedData",
-		"InteractiveClearDeletionMarkPredefinedData","InteractiveDeleteMarkedPredefinedData"
+		"InteractiveClearDeletionMarkPredefinedData","InteractiveDeleteMarkedPredefinedData",
+		"ReadDataHistory","ViewDataHistory","UpdateDataHistory",
+		"ReadDataHistoryOfMissingData","UpdateDataHistoryOfMissingData",
+		"UpdateDataHistorySettings","UpdateDataHistoryVersionComment",
+		"EditDataHistoryVersionComment","SwitchToDataHistoryVersion"
 	)
 	"ExchangePlan" = @(
 		"Read","Insert","Update","Delete","View","Edit","InputByString",
@@ -375,12 +382,20 @@ $script:knownRights = @{
 	"BusinessProcess" = @(
 		"Read","Insert","Update","Delete","View","Edit","InputByString",
 		"Start","InteractiveInsert","InteractiveSetDeletionMark","InteractiveClearDeletionMark",
-		"InteractiveDelete","InteractiveActivate","InteractiveStart"
+		"InteractiveDelete","InteractiveDeleteMarked","InteractiveActivate","InteractiveStart",
+		"ReadDataHistory","ReadDataHistoryOfMissingData",
+		"UpdateDataHistory","UpdateDataHistoryOfMissingData",
+		"UpdateDataHistorySettings","UpdateDataHistoryVersionComment",
+		"ViewDataHistory","EditDataHistoryVersionComment","SwitchToDataHistoryVersion"
 	)
 	"Task" = @(
 		"Read","Insert","Update","Delete","View","Edit","InputByString",
 		"Execute","InteractiveInsert","InteractiveSetDeletionMark","InteractiveClearDeletionMark",
-		"InteractiveDelete","InteractiveActivate","InteractiveExecute"
+		"InteractiveDelete","InteractiveDeleteMarked","InteractiveActivate","InteractiveExecute",
+		"ReadDataHistory","ReadDataHistoryOfMissingData",
+		"UpdateDataHistory","UpdateDataHistoryOfMissingData",
+		"UpdateDataHistorySettings","UpdateDataHistoryVersionComment",
+		"ViewDataHistory","EditDataHistoryVersionComment","SwitchToDataHistoryVersion"
 	)
 	"DataProcessor" = @("Use","View")
 	"Report" = @("Use","View")
@@ -390,13 +405,221 @@ $script:knownRights = @{
 	"FilterCriterion" = @("View")
 	"DocumentJournal" = @("Read","View")
 	"Sequence" = @("Read","Update")
-	"WebService" = @("Use")
-	"HTTPService" = @("Use")
-	"IntegrationService" = @("Use")
+	# Замер 8.3.27: у самих веб- и HTTP-сервисов прав нет - платформа отбрасывает блок
+	# при загрузке. Право Use живет на операции (WebService...Operation.*) и методе
+	# (HTTPService...URLTemplate.*.Method.*).
+	"WebService" = @()
+	"HTTPService" = @()
+	# Замер 8.3.27: у самого сервиса интеграции прав нет - платформа отбрасывает блок
+	# при загрузке. Право Use живет на канале
+	# (IntegrationService...IntegrationServiceChannel.*).
+	"IntegrationService" = @()
 	"SessionParameter" = @("Get","Set")
 	"CommonAttribute" = @("View","Edit")
 }
 
+# --- Замыкание прав по зависимостям ---
+#
+# Платформа при загрузке роли дописывает права, без которых заданные не действуют:
+# после первой загрузки файл роли и база расходятся, если писать ровно заданный набор.
+# Замер круговым прогоном на 8.3.27.2214: роль с единственным правом R загружается в
+# пустую базу и выгружается обратно; в выгрузке - полный набор, который держит R.
+# Замыкание одноименных прав объединяется (проверено сверкой с выгрузкой полного набора).
+
+$script:globalRightImpl = @{
+	"Insert" = @("Read")
+	"Update" = @("Read")
+	"Delete" = @("Read")
+	"View" = @("Read")
+	"Edit" = @("Read","Update","View")
+	"InputByString" = @("Read","View")
+	"InteractiveInsert" = @("Read","Insert","Update","View","Edit")
+	"InteractiveDelete" = @("Read","Update","Delete","View","Edit")
+	"InteractiveDeleteMarked" = @("Read","Update","Delete","View","Edit")
+	"InteractiveSetDeletionMark" = @("Read","Update","View","Edit")
+	"InteractiveClearDeletionMark" = @("Read","Update","View","Edit")
+	"InteractiveDeletePredefinedData" = @("Read","Update","Delete","View","Edit","InteractiveDelete")
+	"InteractiveSetDeletionMarkPredefinedData" = @("Read","Update","View","Edit","InteractiveSetDeletionMark")
+	"InteractiveClearDeletionMarkPredefinedData" = @("Read","Update","View","Edit","InteractiveClearDeletionMark")
+	"InteractiveDeleteMarkedPredefinedData" = @("Read","Update","Delete","View","Edit","InteractiveDeleteMarked")
+	"Posting" = @("Read","Update")
+	"UndoPosting" = @("Read","Update")
+	"InteractivePosting" = @("Read","Update","Posting","View","Edit")
+	"InteractivePostingRegular" = @("InteractivePosting")
+	"InteractiveUndoPosting" = @("Read","Update","UndoPosting","View","Edit")
+	"InteractiveChangeOfPosted" = @("Read","Update","View","Edit")
+	"ReadDataHistory" = @("Read")
+	"ReadDataHistoryOfMissingData" = @("Read","ReadDataHistory")
+	"UpdateDataHistory" = @("Read","ReadDataHistory")
+	"UpdateDataHistoryOfMissingData" = @("Read","ReadDataHistory","ReadDataHistoryOfMissingData","UpdateDataHistory")
+	"UpdateDataHistoryVersionComment" = @("Read","ReadDataHistory")
+	"ViewDataHistory" = @("Read","View","ReadDataHistory")
+	"EditDataHistoryVersionComment" = @("Read","View","ReadDataHistory","UpdateDataHistoryVersionComment")
+	"SwitchToDataHistoryVersion" = @("Read","View")
+	"Start" = @("Read","Update")
+	"InteractiveStart" = @("Read","Update","Start")
+	"InteractiveActivate" = @("Read","Update")
+	"Execute" = @("Read","Update")
+	"InteractiveExecute" = @("Read","Update","Execute")
+	"Administration" = @("DataAdministration")
+}
+
+# Отклонения от глобальных правил, снятые тем же замером.
+$script:rightImplByType = @{
+	# У плана счетов блок истории данных не тянет за собой Read.
+	"ChartOfAccounts" = @{
+		"ReadDataHistory" = @()
+		"ReadDataHistoryOfMissingData" = @("ReadDataHistory")
+		"UpdateDataHistory" = @("ReadDataHistory")
+		"UpdateDataHistoryOfMissingData" = @("ReadDataHistory","ReadDataHistoryOfMissingData","UpdateDataHistory")
+		"UpdateDataHistoryVersionComment" = @("ReadDataHistory")
+		"ViewDataHistory" = @("View","ReadDataHistory")
+		"EditDataHistoryVersionComment" = @("View","ReadDataHistory","UpdateDataHistoryVersionComment")
+		"SwitchToDataHistoryVersion" = @("View")
+	}
+	# У регистра сведений история отсутствующих данных не входит в замыкание.
+	"InformationRegister" = @{
+		"UpdateDataHistoryOfMissingData" = @("Read","ReadDataHistory","UpdateDataHistory")
+	}
+	# У обработки и отчета просмотр требует использования, а не чтения.
+	"DataProcessor" = @{ "View" = @("Use") }
+	"Report" = @{ "View" = @("Use") }
+}
+
+function Get-ImplFor {
+	param([string]$ObjectType, [string]$Right)
+
+	# Импликации права у конкретного типа: переопределение или глобальные,
+	# пересеченные с правами типа (импликация имеет смысл только для существующих прав).
+	if ($script:rightImplByType.ContainsKey($ObjectType) -and
+		$script:rightImplByType[$ObjectType].ContainsKey($Right)) {
+		return @($script:rightImplByType[$ObjectType][$Right])
+	}
+	$implied = @()
+	if ($script:globalRightImpl.ContainsKey($Right)) { $implied = @($script:globalRightImpl[$Right]) }
+	if (-not $script:knownRights.ContainsKey($ObjectType)) { return $implied }
+	$typeRights = @($script:knownRights[$ObjectType])
+	return @($implied | Where-Object { $_ -in $typeRights })
+}
+
+function Close-Rights {
+	# Транзитивное замыкание включенных прав по зависимостям: платформа при загрузке
+	# дописывает те же права, поэтому замкнутый файл совпадает с выгрузкой после
+	# первой загрузки.
+	param([string]$ObjectType, [string[]]$RightNames)
+
+	$result = [System.Collections.Generic.HashSet[string]]::new([string[]]$RightNames)
+	$frontier = [System.Collections.Generic.Queue[string]]::new()
+	foreach ($r in $RightNames) { $frontier.Enqueue($r) }
+	while ($frontier.Count -gt 0) {
+		$r = $frontier.Dequeue()
+		foreach ($imp in (Get-ImplFor -ObjectType $ObjectType -Right $r)) {
+			if ($result.Add($imp)) { $frontier.Enqueue($imp) }
+		}
+	}
+	return @($result)
+}
+
+# --- Канонический порядок прав ---
+#
+# Платформа выгружает права объекта в одном порядке по всем типам. Порядок снят с
+# выгрузки полного набора и сверен: порядок каждого типа - подпоследовательность этого
+# списка. Права вне списка (незамеренные вложенные виды) идут в конце в порядке ввода.
+$script:rightOrder = @(
+	# Configuration
+	"Administration","DataAdministration","UpdateDataBaseConfiguration",
+	"ExclusiveMode","ActiveUsers","EventLog",
+	"ThinClient","WebClient","MobileClient","ThickClient","ExternalConnection",
+	"Automation","TechnicalSpecialistMode","CollaborationSystemInfoBaseRegistration",
+	"MainWindowModeNormal","MainWindowModeWorkplace","MainWindowModeEmbeddedWorkplace",
+	"MainWindowModeFullscreenWorkplace","MainWindowModeKiosk","AnalyticsSystemClient",
+	"SaveUserData","ConfigurationExtensionsAdministration",
+	"InteractiveOpenExtDataProcessors","InteractiveOpenExtReports","Output",
+	# объектные
+	"Read","Insert","Update","Delete","Posting","UndoPosting",
+	"Use","View","Get","Set",
+	"InteractiveInsert","Edit","InteractiveDelete","InteractiveSetDeletionMark",
+	"InteractiveClearDeletionMark","InteractiveDeleteMarked",
+	"InteractivePosting","InteractivePostingRegular","InteractiveUndoPosting",
+	"InteractiveChangeOfPosted","InputByString",
+	"InteractiveActivate","Start","InteractiveStart","Execute","InteractiveExecute",
+	"InteractiveDeletePredefinedData","InteractiveSetDeletionMarkPredefinedData",
+	"InteractiveClearDeletionMarkPredefinedData","InteractiveDeleteMarkedPredefinedData",
+	"TotalsControl",
+	"ReadDataHistory","ReadDataHistoryOfMissingData","UpdateDataHistory",
+	"UpdateDataHistoryOfMissingData","UpdateDataHistorySettings",
+	"UpdateDataHistoryVersionComment","ViewDataHistory","EditDataHistoryVersionComment",
+	"SwitchToDataHistoryVersion"
+)
+$script:rightOrderPos = @{}
+for ($i = 0; $i -lt $script:rightOrder.Count; $i++) { $script:rightOrderPos[$script:rightOrder[$i]] = $i }
+
+# Виды, у которых View и Edit подчиняются флажку setForAttributesByDefault.
+# Замер 8.3.27.2214: выгрузка оставляет право, только если оно не совпадает с умолчанием.
+# setForAttributesByDefault=true - умолчание true (явный true пропадает, false остается).
+# setForAttributesByDefault=false - умолчание false (явный false пропадает, true остается).
+# independentRightsOfChildObjects и наличие прав на сам объект выгрузку не меняют.
+# Измерения и ресурсы регистров подчиняются тому же правилу; измерения куба внешнего источника не замерены.
+$script:nestedDefaultKinds = @("Attribute", "TabularSection", "StandardAttribute", "Dimension", "Resource")
+
+# Условие ограничения доступа на вложенном праве, замер 8.3.27.2214: у стандартного реквизита
+# выгрузка сохраняет условие и право с ним при любом значении; у реквизита, измерения и ресурса
+# условие не сохраняется.
+$script:nestedConditionKeptKinds = @("StandardAttribute")
+$script:nestedConditionDroppedKinds = @("Attribute", "Dimension", "Resource")
+
+function Test-NestedDefaultRightKept {
+	# Вложенное право остается в выгрузке, если несет сохраняемое условие или не дублирует умолчание.
+	param([string]$ObjectName, [string]$RightName, [string]$Value, [bool]$SetForAttributesByDefault, [string]$Condition)
+	$parts = $ObjectName.Split(".")
+	$kind = $parts[$parts.Count - 2]
+	if ($parts[0] -eq "ExternalDataSource" -or $kind -notin $script:nestedDefaultKinds -or $RightName -notin @("View", "Edit")) {
+		return $true
+	}
+	if ($Condition -and $kind -in $script:nestedConditionKeptKinds) {
+		return $true
+	}
+	$defaultValue = if ($SetForAttributesByDefault) { "true" } else { "false" }
+	return ($Value.ToLower() -ne $defaultValue)
+}
+
+function Close-NestedViewEdit {
+	# Согласует View и Edit вложенного права так, как их приводит загрузка платформы.
+	# Замер 8.3.27.2214: явный Edit=true при View=false дает View=true; View=false при Edit
+	# по умолчанию дает Edit=false. Возвращает новый список, исходный не меняется.
+	param([string]$ObjectName, $Rights, [bool]$SetForAttributesByDefault)
+	$result = New-Object System.Collections.ArrayList
+	foreach ($right in @($Rights)) {
+		if ($null -eq $right) { continue }
+		[void]$result.Add(@{ Name = "$($right.Name)"; Value = "$($right.Value)"; Condition = $right.Condition })
+	}
+	$parts = $ObjectName.Split(".")
+	if ($parts[0] -eq "ExternalDataSource" -or $parts[$parts.Count - 2] -notin $script:nestedDefaultKinds) {
+		return $result.ToArray()
+	}
+	$defaultValue = if ($SetForAttributesByDefault) { "true" } else { "false" }
+	$viewRight = $null
+	$editRight = $null
+	foreach ($right in $result) {
+		if ($right.Name -eq "View") { $viewRight = $right }
+		if ($right.Name -eq "Edit") { $editRight = $right }
+	}
+	$view = if ($viewRight) { $viewRight.Value.ToLower() } else { $defaultValue }
+	$edit = if ($editRight) { $editRight.Value.ToLower() } else { $defaultValue }
+	if ($view -ne "false" -or $edit -ne "true") { return $result.ToArray() }
+	if ($editRight) {
+		if ($viewRight) {
+			$viewRight.Value = "true"
+		} else {
+			$result.Insert($result.IndexOf($editRight), @{ Name = "View"; Value = "true"; Condition = $null })
+		}
+	} else {
+		[void]$result.Add(@{ Name = "Edit"; Value = "false"; Condition = $null })
+	}
+	return $result.ToArray()
+}
+
+# --- Конец общего блока таблицы прав и замыкания ---
 # Nested objects: Attribute, StandardAttribute, TabularSection, Dimension, Resource, AddressingAttribute
 $script:nestedRights = @("View","Edit")
 $script:commandRights = @("View")
@@ -406,6 +629,8 @@ $script:commandRights = @("View")
 $script:nestedRightsByKind = @{
 	"Attribute" = @("View","Edit")
 	"TabularSection" = @("View","Edit")
+	"StandardAttribute" = @("View","Edit")
+	"Resource" = @("View","Edit")
 	"Field" = @("View","Edit")
 	"Command" = @("View")
 	"Subsystem" = @("View")
@@ -433,14 +658,18 @@ $script:typesRightsNotChecked = @("ExternalDataSource")
 
 # Виды вложенности по владельцу. Ключ - тип объекта или вид предыдущего уровня: у HTTP-сервиса
 # внутри шаблона URL лежит метод, у таблицы внешнего источника - поле, у куба - измерение.
-$script:defaultNestedKinds = @("Attribute","TabularSection","Command")
+$script:defaultNestedKinds = @("Attribute","TabularSection","StandardAttribute","Command")
+$script:registerNestedKinds = @("Dimension","Resource","Attribute","StandardAttribute","Command")
 $script:nestedKindsByOwner = @{
 	"WebService" = @("Operation")
 	"HTTPService" = @("URLTemplate")
 	"URLTemplate" = @("Method")
 	"IntegrationService" = @("IntegrationServiceChannel")
 	"Subsystem" = @("Subsystem")
-	"CalculationRegister" = @("Recalculation")
+	"InformationRegister" = $script:registerNestedKinds
+	"AccumulationRegister" = $script:registerNestedKinds
+	"AccountingRegister" = $script:registerNestedKinds
+	"CalculationRegister" = $script:registerNestedKinds + @("Recalculation")
 	"ExternalDataSource" = @("Table","Cube","Function")
 	"Table" = @("Field")
 	"Cube" = @("Dimension","ResourceField")
@@ -492,13 +721,12 @@ function Test-ObjectTypeKnown {
 	return $false
 }
 
-# Владелец, у которого такой вид вложенности законен, - для подсказки в сообщении об ошибке.
-function Find-KindOwner {
+# Владельцы, у которых такой вид вложенности законен, - для подсказки в сообщении об ошибке.
+function Find-KindOwners {
 	param([string]$Kind)
 	foreach ($owner in $script:nestedKindsByOwner.Keys) {
-		if ($Kind -in $script:nestedKindsByOwner[$owner]) { return $owner }
+		if ($Kind -in $script:nestedKindsByOwner[$owner]) { $owner }
 	}
-	return $null
 }
 
 function Test-NestedKind {
@@ -517,18 +745,23 @@ function Test-NestedKind {
 		}
 		if ($kind -in $allowed) { continue }
 
-		$realOwner = Find-KindOwner $kind
-		if ($realOwner) {
+		$realOwners = if ($kind -in $script:defaultNestedKinds) { @() } else { @(Find-KindOwners $kind) }
+		if ($realOwners.Count -gt 0) {
 			# Владелец вида сам бывает видом: поле лежит в таблице, а таблица - во внешнем
 			# источнике данных. В сообщении называется корень цепочки, он же тип объекта.
-			$rootOwner = $realOwner
-			$guard = 0
-			while ((Find-KindOwner $rootOwner) -and $guard -lt 10) {
-				$rootOwner = Find-KindOwner $rootOwner
-				$guard++
+			$places = New-Object System.Collections.Generic.List[string]
+			foreach ($realOwner in $realOwners) {
+				$rootOwner = $realOwner
+				$guard = 0
+				while (@(Find-KindOwners $rootOwner).Count -gt 0 -and $guard -lt 10) {
+					$rootOwner = @(Find-KindOwners $rootOwner)[0]
+					$guard++
+				}
+				if ($rootOwner -ne $realOwner) { $places.Add("$rootOwner (внутри $realOwner)") } else { $places.Add($rootOwner) }
 			}
-			$chain = if ($rootOwner -ne $realOwner) { " (внутри $realOwner)" } else { "" }
-			Add-InputError "${ObjectName}: вид вложенности '$kind' бывает только у $rootOwner$chain, а здесь владелец '$owner'"
+			$placeArray = $places.ToArray()
+			[Array]::Sort($placeArray, [StringComparer]::Ordinal)
+			Add-InputError "${ObjectName}: вид вложенности '$kind' бывает только у $($placeArray -join ', '), а здесь владелец '$owner'"
 		} else {
 			Add-InputError "${ObjectName}: неизвестный вид вложенности '$kind' у '$owner'"
 		}
@@ -578,6 +811,7 @@ $script:presets = @{
 		"InformationRegister" = @("Read","Update","View","Edit")
 		"AccumulationRegister" = @("Read","Update","View","Edit")
 		"AccountingRegister" = @("Read","Update","View","Edit")
+		"CalculationRegister" = @("Read","Update","View","Edit")
 		"Constant" = @("Read","Update","View","Edit")
 		"DocumentJournal" = @("Read","View")
 		"Sequence" = @("Read","Update")
@@ -663,6 +897,83 @@ function Validate-RightName {
 
 # --- 6. Parse object entries ---
 
+function Finish-Rights {
+	# Замыкание включенных прав и канонический порядок выдачи. Замыкание применяется
+	# только к объектам верхнего уровня с замеренным набором прав: у вложенных видов
+	# платформа зависимостей не дописывает (замер 8.3.27).
+	param([string]$ObjectName, $RightsMap)
+
+	$objectType = Get-ObjectType $ObjectName
+	$rightsOrder = @($RightsMap.Keys)
+	if (-not (Is-NestedObject $ObjectName) -and $script:knownRights.ContainsKey($objectType)) {
+		$enabled = @($rightsOrder | Where-Object { $RightsMap[$_].Value -eq "true" })
+		$closed = Close-Rights -ObjectType $objectType -RightNames $enabled
+		foreach ($r in $closed) {
+			if (-not $RightsMap.Contains($r)) {
+				$RightsMap[$r] = @{Value="true"; Condition=$null}
+			}
+		}
+		$rightsOrder = @($RightsMap.Keys)
+		foreach ($r in $rightsOrder) {
+			if ($RightsMap[$r].Value -eq "false" -and $closed -contains $r) {
+				$holders = @($closed | Where-Object { $_ -ne $r -and (Get-ImplFor -ObjectType $objectType -Right $_) -contains $r })
+				[Console]::Error.WriteLine("WARNING: ${ObjectName}: право '$r' выключено явно, но право $($holders -join '/') требует его включенным - платформа отбросит весь блок объекта при загрузке")
+			}
+		}
+	}
+	$tailCount = $script:rightOrder.Count
+	$rightsOrder = @($rightsOrder | Sort-Object `
+		{ if ($script:rightOrderPos.ContainsKey($_)) { [int]$script:rightOrderPos[$_] } else { [int]($tailCount + 1) } },`
+		{ [array]::IndexOf($rightsOrder, $_) })
+	$rights = @()
+	foreach ($k in $rightsOrder) {
+		$rights += ,@{
+			Name = $k
+			Value = $RightsMap[$k].Value
+			Condition = $RightsMap[$k].Condition
+		}
+	}
+	return $rights
+}
+
+function Filter-NestedDefaults($Objects, [bool]$SetForAttributesByDefault) {
+	# Убирает вложенные права, которые выгрузка платформы не содержит.
+	# Замер 8.3.27: право View или Edit реквизита, табличной части или стандартного
+	# реквизита, измерения и ресурса регистра остается, только если не совпадает с
+	# setForAttributesByDefault. Право стандартного реквизита с условием остается всегда.
+	# Пустой блок объекта не пишется.
+	# Вызов передает массив вторым уровнем (, $parsedObjects): один элемент-массив
+	# разворачивается, одиночный словарь остается одним объектом.
+	$items = New-Object System.Collections.ArrayList
+	if ($Objects -is [System.Collections.IDictionary]) {
+		[void]$items.Add($Objects)
+	} elseif ($Objects -is [System.Array]) {
+		$source = $Objects
+		if ($Objects.Count -eq 1 -and $Objects[0] -is [System.Array]) { $source = $Objects[0] }
+		foreach ($item in @($source)) {
+			if ($null -ne $item -and $item -is [System.Collections.IDictionary]) { [void]$items.Add($item) }
+		}
+	}
+	$result = @()
+	foreach ($obj in $items) {
+		if (-not (Is-NestedObject "$($obj.Name)")) {
+			$result += ,$obj
+			continue
+		}
+		$rights = @()
+		foreach ($right in @(Close-NestedViewEdit -ObjectName "$($obj.Name)" -Rights @($obj.Rights) -SetForAttributesByDefault $SetForAttributesByDefault)) {
+			if ($null -eq $right -or $right -isnot [System.Collections.IDictionary]) { continue }
+			if (Test-NestedDefaultRightKept -ObjectName "$($obj.Name)" -RightName "$($right.Name)" -Value "$($right.Value)" -SetForAttributesByDefault $SetForAttributesByDefault -Condition "$($right.Condition)") {
+				$rights += ,$right
+			}
+		}
+		if ($rights.Count -gt 0) {
+			$result += ,@{ Name = $obj.Name; Rights = $rights }
+		}
+	}
+	return ,$result
+}
+
 function Parse-ObjectEntry {
 	param($entry)
 
@@ -689,10 +1000,11 @@ function Parse-ObjectEntry {
 			}
 		}
 
-		$rights = @()
+		$rightsMap = [ordered]@{}
 		foreach ($r in $rightNames) {
-			$rights += ,@{Name=$r; Value="true"; Condition=$null}
+			$rightsMap[$r] = @{Value="true"; Condition=$null}
 		}
+		$rights = Finish-Rights -ObjectName $objName -RightsMap $rightsMap
 		return @{ Name = $objName; Rights = $rights }
 	}
 
@@ -739,25 +1051,22 @@ function Parse-ObjectEntry {
 		}
 	}
 
-	# 3) Apply RLS conditions
+	# Convert to array (замыкание включенных прав + канонический порядок)
+	$rights = Finish-Rights -ObjectName $objName -RightsMap $rightsMap
+
+	# 3) Apply RLS conditions - после замыкания: право, добавленное замыканием, тоже получает условие
 	if ($entry.rls) {
+		$rlsKind = if (Is-NestedObject $objName) { $objName.Split('.')[-2] } else { $null }
 		foreach ($p in $entry.rls.PSObject.Properties) {
 			$rlsRight = Translate-RightName $p.Name
-			if ($rightsMap.Contains($rlsRight)) {
-				$rightsMap[$rlsRight].Condition = "$($p.Value)"
+			$target = @($rights | Where-Object { $_.Name -eq $rlsRight })
+			if ($rlsKind -and $rlsKind -in $script:nestedConditionDroppedKinds) {
+				Write-Warning "${objName}: платформа не хранит условие ограничения доступа у вида '$rlsKind', условие на '$rlsRight' не записано"
+			} elseif ($target.Count -gt 0) {
+				$target[0].Condition = "$($p.Value)"
 			} else {
 				Write-Warning "${objName}: RLS for '$rlsRight' but this right is not in the rights list"
 			}
-		}
-	}
-
-	# Convert to array
-	$rights = @()
-	foreach ($k in $rightsMap.Keys) {
-		$rights += ,@{
-			Name = $k
-			Value = $rightsMap[$k].Value
-			Condition = $rightsMap[$k].Condition
 		}
 	}
 
@@ -883,10 +1192,17 @@ X '<?xml version="1.0" encoding="UTF-8"?>'
 # Шапка файла прав тоже идет одной строкой; палитры в ней нет - у файла своя схема.
 X "<Rights xmlns=`"http://v8.1c.ru/8.2/roles`" xmlns:xs=`"http://www.w3.org/2001/XMLSchema`" xmlns:xsi=`"http://www.w3.org/2001/XMLSchema-instance`" xsi:type=`"Rights`" version=`"$formatVersion`">"
 
-# Global flags (defaults match typical 1C roles)
-$sfno = if ($null -ne $def.setForNewObjects) { "$($def.setForNewObjects)".ToLower() } else { "false" }
+# Global flags. У роли ПолныеПрава и FullAccess флажок новых объектов по умолчанию включен.
+if ($null -ne $def.setForNewObjects) {
+	$sfno = "$($def.setForNewObjects)".ToLower()
+} elseif ($roleName -in @('ПолныеПрава', 'FullAccess')) {
+	$sfno = 'true'
+} else {
+	$sfno = 'false'
+}
 $sfab = if ($null -ne $def.setForAttributesByDefault) { "$($def.setForAttributesByDefault)".ToLower() } else { "true" }
 $irco = if ($null -ne $def.independentRightsOfChildObjects) { "$($def.independentRightsOfChildObjects)".ToLower() } else { "false" }
+$parsedObjects = Filter-NestedDefaults -Objects (, $parsedObjects) -SetForAttributesByDefault ($sfab -eq 'true')
 
 X "	<setForNewObjects>$sfno</setForNewObjects>"
 X "	<setForAttributesByDefault>$sfab</setForAttributesByDefault>"

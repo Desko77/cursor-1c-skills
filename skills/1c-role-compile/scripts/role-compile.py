@@ -309,6 +309,7 @@ def write_utf8_bom(path, content, eol='\r\n'):
         f.write(content)
 
 
+# --- Таблица прав и замыкание (общий блок, версия 2) ---
 # --- Russian synonyms -> canonical English names ---
 
 TYPE_ALIASES = {
@@ -434,7 +435,8 @@ KNOWN_RIGHTS = {
     ],
     "AccumulationRegister": ["Read", "Update", "View", "Edit", "TotalsControl"],
     "AccountingRegister": ["Read", "Update", "View", "Edit", "TotalsControl"],
-    "CalculationRegister": ["Read", "View"],
+    # Замер 8.3.27: у регистра расчета есть Update и Edit, а TotalsControl - нет.
+    "CalculationRegister": ["Read", "Update", "View", "Edit"],
     "Constant": [
         "Read", "Update", "View", "Edit",
         "ReadDataHistory", "ViewDataHistory", "UpdateDataHistory",
@@ -444,12 +446,13 @@ KNOWN_RIGHTS = {
     "ChartOfAccounts": [
         "Read", "Insert", "Update", "Delete", "View", "Edit", "InputByString",
         "InteractiveInsert", "InteractiveSetDeletionMark", "InteractiveClearDeletionMark",
-        "InteractiveDelete",
+        "InteractiveDelete", "InteractiveDeleteMarked",
         "InteractiveDeletePredefinedData", "InteractiveSetDeletionMarkPredefinedData",
         "InteractiveClearDeletionMarkPredefinedData", "InteractiveDeleteMarkedPredefinedData",
         "ReadDataHistory", "ReadDataHistoryOfMissingData",
         "UpdateDataHistory", "UpdateDataHistoryOfMissingData",
         "UpdateDataHistorySettings", "UpdateDataHistoryVersionComment",
+        "ViewDataHistory", "EditDataHistoryVersionComment", "SwitchToDataHistoryVersion",
     ],
     "ChartOfCharacteristicTypes": [
         "Read", "Insert", "Update", "Delete", "View", "Edit", "InputByString",
@@ -465,9 +468,13 @@ KNOWN_RIGHTS = {
     "ChartOfCalculationTypes": [
         "Read", "Insert", "Update", "Delete", "View", "Edit", "InputByString",
         "InteractiveInsert", "InteractiveSetDeletionMark", "InteractiveClearDeletionMark",
-        "InteractiveDelete",
+        "InteractiveDelete", "InteractiveDeleteMarked",
         "InteractiveDeletePredefinedData", "InteractiveSetDeletionMarkPredefinedData",
         "InteractiveClearDeletionMarkPredefinedData", "InteractiveDeleteMarkedPredefinedData",
+        "ReadDataHistory", "ViewDataHistory", "UpdateDataHistory",
+        "ReadDataHistoryOfMissingData", "UpdateDataHistoryOfMissingData",
+        "UpdateDataHistorySettings", "UpdateDataHistoryVersionComment",
+        "EditDataHistoryVersionComment", "SwitchToDataHistoryVersion",
     ],
     "ExchangePlan": [
         "Read", "Insert", "Update", "Delete", "View", "Edit", "InputByString",
@@ -481,12 +488,20 @@ KNOWN_RIGHTS = {
     "BusinessProcess": [
         "Read", "Insert", "Update", "Delete", "View", "Edit", "InputByString",
         "Start", "InteractiveInsert", "InteractiveSetDeletionMark", "InteractiveClearDeletionMark",
-        "InteractiveDelete", "InteractiveActivate", "InteractiveStart",
+        "InteractiveDelete", "InteractiveDeleteMarked", "InteractiveActivate", "InteractiveStart",
+        "ReadDataHistory", "ReadDataHistoryOfMissingData",
+        "UpdateDataHistory", "UpdateDataHistoryOfMissingData",
+        "UpdateDataHistorySettings", "UpdateDataHistoryVersionComment",
+        "ViewDataHistory", "EditDataHistoryVersionComment", "SwitchToDataHistoryVersion",
     ],
     "Task": [
         "Read", "Insert", "Update", "Delete", "View", "Edit", "InputByString",
         "Execute", "InteractiveInsert", "InteractiveSetDeletionMark", "InteractiveClearDeletionMark",
-        "InteractiveDelete", "InteractiveActivate", "InteractiveExecute",
+        "InteractiveDelete", "InteractiveDeleteMarked", "InteractiveActivate", "InteractiveExecute",
+        "ReadDataHistory", "ReadDataHistoryOfMissingData",
+        "UpdateDataHistory", "UpdateDataHistoryOfMissingData",
+        "UpdateDataHistorySettings", "UpdateDataHistoryVersionComment",
+        "ViewDataHistory", "EditDataHistoryVersionComment", "SwitchToDataHistoryVersion",
     ],
     "DataProcessor": ["Use", "View"],
     "Report": ["Use", "View"],
@@ -496,9 +511,15 @@ KNOWN_RIGHTS = {
     "FilterCriterion": ["View"],
     "DocumentJournal": ["Read", "View"],
     "Sequence": ["Read", "Update"],
-    "WebService": ["Use"],
-    "HTTPService": ["Use"],
-    "IntegrationService": ["Use"],
+    # Замер 8.3.27: у самих веб- и HTTP-сервисов прав нет - платформа отбрасывает блок
+    # при загрузке. Право Use живет на операции (WebService...Operation.*) и методе
+    # (HTTPService...URLTemplate.*.Method.*).
+    "WebService": [],
+    "HTTPService": [],
+    # Замер 8.3.27: у самого сервиса интеграции прав нет - платформа отбрасывает блок
+    # при загрузке. Право Use живет на канале
+    # (IntegrationService...IntegrationServiceChannel.*).
+    "IntegrationService": [],
     "SessionParameter": ["Get", "Set"],
     "CommonAttribute": ["View", "Edit"],
 }
@@ -506,6 +527,204 @@ KNOWN_RIGHTS = {
 NESTED_RIGHTS = ["View", "Edit"]
 COMMAND_RIGHTS = ["View"]
 
+# --- Замыкание прав по зависимостям ---
+#
+# Платформа при загрузке роли дописывает права, без которых заданные не действуют:
+# после первой загрузки файл роли и база расходятся, если писать ровно заданный набор.
+# Замер круговым прогоном на 8.3.27.2214: роль с единственным правом R загружается в
+# пустую базу и выгружается обратно; в выгрузке - полный набор, который держит R.
+# Замыкание одноименных прав объединяется (проверено сверкой с выгрузкой полного набора).
+
+GLOBAL_RIGHT_IMPL = {
+    "Insert": ["Read"],
+    "Update": ["Read"],
+    "Delete": ["Read"],
+    "View": ["Read"],
+    "Edit": ["Read", "Update", "View"],
+    "InputByString": ["Read", "View"],
+    "InteractiveInsert": ["Read", "Insert", "Update", "View", "Edit"],
+    "InteractiveDelete": ["Read", "Update", "Delete", "View", "Edit"],
+    "InteractiveDeleteMarked": ["Read", "Update", "Delete", "View", "Edit"],
+    "InteractiveSetDeletionMark": ["Read", "Update", "View", "Edit"],
+    "InteractiveClearDeletionMark": ["Read", "Update", "View", "Edit"],
+    "InteractiveDeletePredefinedData":
+        ["Read", "Update", "Delete", "View", "Edit", "InteractiveDelete"],
+    "InteractiveSetDeletionMarkPredefinedData":
+        ["Read", "Update", "View", "Edit", "InteractiveSetDeletionMark"],
+    "InteractiveClearDeletionMarkPredefinedData":
+        ["Read", "Update", "View", "Edit", "InteractiveClearDeletionMark"],
+    "InteractiveDeleteMarkedPredefinedData":
+        ["Read", "Update", "Delete", "View", "Edit", "InteractiveDeleteMarked"],
+    "Posting": ["Read", "Update"],
+    "UndoPosting": ["Read", "Update"],
+    "InteractivePosting": ["Read", "Update", "Posting", "View", "Edit"],
+    "InteractivePostingRegular": ["InteractivePosting"],
+    "InteractiveUndoPosting": ["Read", "Update", "UndoPosting", "View", "Edit"],
+    "InteractiveChangeOfPosted": ["Read", "Update", "View", "Edit"],
+    "ReadDataHistory": ["Read"],
+    "ReadDataHistoryOfMissingData": ["Read", "ReadDataHistory"],
+    "UpdateDataHistory": ["Read", "ReadDataHistory"],
+    "UpdateDataHistoryOfMissingData":
+        ["Read", "ReadDataHistory", "ReadDataHistoryOfMissingData", "UpdateDataHistory"],
+    "UpdateDataHistoryVersionComment": ["Read", "ReadDataHistory"],
+    "ViewDataHistory": ["Read", "View", "ReadDataHistory"],
+    "EditDataHistoryVersionComment": ["Read", "View", "ReadDataHistory", "UpdateDataHistoryVersionComment"],
+    "SwitchToDataHistoryVersion": ["Read", "View"],
+    "Start": ["Read", "Update"],
+    "InteractiveStart": ["Read", "Update", "Start"],
+    "InteractiveActivate": ["Read", "Update"],
+    "Execute": ["Read", "Update"],
+    "InteractiveExecute": ["Read", "Update", "Execute"],
+    "Administration": ["DataAdministration"],
+}
+
+# Отклонения от глобальных правил, снятые тем же замером.
+RIGHT_IMPL_BY_TYPE = {
+    # У плана счетов блок истории данных не тянет за собой Read.
+    "ChartOfAccounts": {
+        "ReadDataHistory": [],
+        "ReadDataHistoryOfMissingData": ["ReadDataHistory"],
+        "UpdateDataHistory": ["ReadDataHistory"],
+        "UpdateDataHistoryOfMissingData":
+            ["ReadDataHistory", "ReadDataHistoryOfMissingData", "UpdateDataHistory"],
+        "UpdateDataHistoryVersionComment": ["ReadDataHistory"],
+        "ViewDataHistory": ["View", "ReadDataHistory"],
+        "EditDataHistoryVersionComment": ["View", "ReadDataHistory", "UpdateDataHistoryVersionComment"],
+        "SwitchToDataHistoryVersion": ["View"],
+    },
+    # У регистра сведений история отсутствующих данных не входит в замыкание.
+    "InformationRegister": {
+        "UpdateDataHistoryOfMissingData": ["Read", "ReadDataHistory", "UpdateDataHistory"],
+    },
+    # У обработки и отчета просмотр требует использования, а не чтения.
+    "DataProcessor": {"View": ["Use"]},
+    "Report": {"View": ["Use"]},
+}
+
+
+def impl_for(object_type, right):
+    """Импликации права у конкретного типа: переопределение или глобальные,
+    пересеченные с правами типа (импликация имеет смысл только для существующих прав)."""
+    override = RIGHT_IMPL_BY_TYPE.get(object_type, {}).get(right)
+    if override is not None:
+        return list(override)
+    type_rights = KNOWN_RIGHTS.get(object_type)
+    implied = GLOBAL_RIGHT_IMPL.get(right, [])
+    if type_rights is None:
+        return list(implied)
+    return [r for r in implied if r in type_rights]
+
+
+def close_rights(object_type, right_names):
+    """Транзитивное замыкание включенных прав по зависимостям.
+
+    Возвращает замкнутый набор: платформа при загрузке дописывает те же права, поэтому
+    файл, собранный этим замыканием, совпадает с выгрузкой после первой загрузки.
+    """
+    result = set(right_names)
+    frontier = list(right_names)
+    while frontier:
+        r = frontier.pop()
+        for imp in impl_for(object_type, r):
+            if imp not in result:
+                result.add(imp)
+                frontier.append(imp)
+    return result
+
+
+# --- Канонический порядок прав ---
+#
+# Платформа выгружает права объекта в одном порядке по всем типам. Порядок снят с
+# выгрузки полного набора и сверен: порядок каждого типа - подпоследовательность этого
+# списка. Права вне списка (незамеренные вложенные виды) идут в конце в порядке ввода.
+RIGHT_ORDER = [
+    # Configuration
+    "Administration", "DataAdministration", "UpdateDataBaseConfiguration",
+    "ExclusiveMode", "ActiveUsers", "EventLog",
+    "ThinClient", "WebClient", "MobileClient", "ThickClient", "ExternalConnection",
+    "Automation", "TechnicalSpecialistMode", "CollaborationSystemInfoBaseRegistration",
+    "MainWindowModeNormal", "MainWindowModeWorkplace", "MainWindowModeEmbeddedWorkplace",
+    "MainWindowModeFullscreenWorkplace", "MainWindowModeKiosk", "AnalyticsSystemClient",
+    "SaveUserData", "ConfigurationExtensionsAdministration",
+    "InteractiveOpenExtDataProcessors", "InteractiveOpenExtReports", "Output",
+    # объектные
+    "Read", "Insert", "Update", "Delete", "Posting", "UndoPosting",
+    "Use", "View", "Get", "Set",
+    "InteractiveInsert", "Edit", "InteractiveDelete", "InteractiveSetDeletionMark",
+    "InteractiveClearDeletionMark", "InteractiveDeleteMarked",
+    "InteractivePosting", "InteractivePostingRegular", "InteractiveUndoPosting",
+    "InteractiveChangeOfPosted", "InputByString",
+    "InteractiveActivate", "Start", "InteractiveStart", "Execute", "InteractiveExecute",
+    "InteractiveDeletePredefinedData", "InteractiveSetDeletionMarkPredefinedData",
+    "InteractiveClearDeletionMarkPredefinedData", "InteractiveDeleteMarkedPredefinedData",
+    "TotalsControl",
+    "ReadDataHistory", "ReadDataHistoryOfMissingData", "UpdateDataHistory",
+    "UpdateDataHistoryOfMissingData", "UpdateDataHistorySettings",
+    "UpdateDataHistoryVersionComment", "ViewDataHistory", "EditDataHistoryVersionComment",
+    "SwitchToDataHistoryVersion",
+]
+_RIGHT_ORDER_POS = {r: i for i, r in enumerate(RIGHT_ORDER)}
+
+
+def right_sort_key(name):
+    """Ключ сортировки права по каноническому порядку; незнакомое право - в конец."""
+    return (_RIGHT_ORDER_POS.get(name, len(RIGHT_ORDER)),)
+
+
+# Виды, у которых View и Edit подчиняются флажку setForAttributesByDefault.
+# Замер 8.3.27.2214: выгрузка оставляет право, только если оно не совпадает с умолчанием.
+# setForAttributesByDefault=true - умолчание true (явный true пропадает, false остается).
+# setForAttributesByDefault=false - умолчание false (явный false пропадает, true остается).
+# independentRightsOfChildObjects и наличие прав на сам объект выгрузку не меняют.
+# Измерения и ресурсы регистров подчиняются тому же правилу; измерения куба внешнего источника не замерены.
+NESTED_DEFAULT_KINDS = ("Attribute", "TabularSection", "StandardAttribute", "Dimension", "Resource")
+
+# Условие ограничения доступа на вложенном праве, замер 8.3.27.2214: у стандартного реквизита
+# выгрузка сохраняет условие и право с ним при любом значении; у реквизита, измерения и ресурса
+# условие не сохраняется.
+NESTED_CONDITION_KEPT_KINDS = ("StandardAttribute",)
+NESTED_CONDITION_DROPPED_KINDS = ("Attribute", "Dimension", "Resource")
+
+
+def nested_default_right_kept(object_name, right_name, value, set_for_attributes_by_default, condition=None):
+    """Вложенное право остается в выгрузке, если несет сохраняемое условие или не дублирует умолчание."""
+    parts = object_name.split(".")
+    kind = parts[-2]
+    if parts[0] == "ExternalDataSource" or kind not in NESTED_DEFAULT_KINDS or right_name not in ("View", "Edit"):
+        return True
+    if condition and kind in NESTED_CONDITION_KEPT_KINDS:
+        return True
+    default_value = "true" if set_for_attributes_by_default else "false"
+    return str(value).lower() != default_value
+
+
+def close_nested_view_edit(object_name, rights, set_for_attributes_by_default):
+    """Согласует View и Edit вложенного права так, как их приводит загрузка платформы.
+
+    Замер 8.3.27.2214: явный Edit=true при View=false дает View=true; View=false при Edit
+    по умолчанию дает Edit=false. Возвращает новый список, исходный не меняется.
+    """
+    parts = object_name.split(".")
+    rights = [dict(right) for right in rights]
+    if parts[0] == "ExternalDataSource" or parts[-2] not in NESTED_DEFAULT_KINDS:
+        return rights
+    default_value = "true" if set_for_attributes_by_default else "false"
+    view_right = next((r for r in rights if r['Name'] == 'View'), None)
+    edit_right = next((r for r in rights if r['Name'] == 'Edit'), None)
+    view = str(view_right['Value']).lower() if view_right else default_value
+    edit = str(edit_right['Value']).lower() if edit_right else default_value
+    if view != 'false' or edit != 'true':
+        return rights
+    if edit_right:
+        if view_right:
+            view_right['Value'] = 'true'
+        else:
+            rights.insert(rights.index(edit_right), {'Name': 'View', 'Value': 'true', 'Condition': None})
+    else:
+        rights.append({'Name': 'Edit', 'Value': 'false', 'Condition': None})
+    return rights
+
+# --- Конец общего блока таблицы прав и замыкания ---
 # --- Presets ---
 
 PRESETS = {
@@ -547,6 +766,7 @@ PRESETS = {
         "InformationRegister": ["Read", "Update", "View", "Edit"],
         "AccumulationRegister": ["Read", "Update", "View", "Edit"],
         "AccountingRegister": ["Read", "Update", "View", "Edit"],
+        "CalculationRegister": ["Read", "Update", "View", "Edit"],
         "Constant": ["Read", "Update", "View", "Edit"],
         "DocumentJournal": ["Read", "View"],
         "Sequence": ["Read", "Update"],
@@ -613,14 +833,18 @@ TYPES_RIGHTS_NOT_CHECKED = ["ExternalDataSource"]
 
 # Виды вложенности по владельцу. Ключ - тип объекта или вид предыдущего уровня: у HTTP-сервиса
 # внутри шаблона URL лежит метод, у таблицы внешнего источника - поле, у куба - измерение.
-DEFAULT_NESTED_KINDS = ["Attribute", "TabularSection", "Command"]
+DEFAULT_NESTED_KINDS = ["Attribute", "TabularSection", "StandardAttribute", "Command"]
+REGISTER_NESTED_KINDS = ["Dimension", "Resource", "Attribute", "StandardAttribute", "Command"]
 NESTED_KINDS_BY_OWNER = {
     "WebService": ["Operation"],
     "HTTPService": ["URLTemplate"],
     "URLTemplate": ["Method"],
     "IntegrationService": ["IntegrationServiceChannel"],
     "Subsystem": ["Subsystem"],
-    "CalculationRegister": ["Recalculation"],
+    "InformationRegister": REGISTER_NESTED_KINDS,
+    "AccumulationRegister": REGISTER_NESTED_KINDS,
+    "AccountingRegister": REGISTER_NESTED_KINDS,
+    "CalculationRegister": REGISTER_NESTED_KINDS + ["Recalculation"],
     "ExternalDataSource": ["Table", "Cube", "Function"],
     "Table": ["Field"],
     "Cube": ["Dimension", "ResourceField"],
@@ -631,6 +855,8 @@ NESTED_KINDS_BY_OWNER = {
 NESTED_RIGHTS_BY_KIND = {
     "Attribute": ["View", "Edit"],
     "TabularSection": ["View", "Edit"],
+    "StandardAttribute": ["View", "Edit"],
+    "Resource": ["View", "Edit"],
     "Field": ["View", "Edit"],
     "Command": ["View"],
     "Subsystem": ["View"],
@@ -689,11 +915,8 @@ def test_object_type_known(object_name):
     return False
 
 
-def find_kind_owner(kind):
-    for owner, kinds in NESTED_KINDS_BY_OWNER.items():
-        if kind in kinds:
-            return owner
-    return None
+def find_kind_owners(kind):
+    return [owner for owner, kinds in NESTED_KINDS_BY_OWNER.items() if kind in kinds]
 
 
 def test_nested_kind(object_name):
@@ -706,19 +929,21 @@ def test_nested_kind(object_name):
         if kind in allowed:
             continue
 
-        real_owner = find_kind_owner(kind)
-        if real_owner:
+        real_owners = [] if kind in DEFAULT_NESTED_KINDS else find_kind_owners(kind)
+        if real_owners:
             # Владелец вида сам бывает видом: поле лежит в таблице, а таблица - во внешнем
             # источнике данных. В сообщении называется корень цепочки, он же тип объекта.
-            root_owner = real_owner
-            for _ in range(10):
-                upper = find_kind_owner(root_owner)
-                if not upper:
-                    break
-                root_owner = upper
-            chain = f" (внутри {real_owner})" if root_owner != real_owner else ""
+            places = []
+            for real_owner in real_owners:
+                root_owner = real_owner
+                for _ in range(10):
+                    upper = find_kind_owners(root_owner)
+                    if not upper:
+                        break
+                    root_owner = upper[0]
+                places.append(f"{root_owner} (внутри {real_owner})" if root_owner != real_owner else root_owner)
             add_input_error(f"{object_name}: вид вложенности '{kind}' бывает только у "
-                            f"{root_owner}{chain}, а здесь владелец '{owner}'")
+                            f"{', '.join(sorted(places))}, а здесь владелец '{owner}'")
         else:
             add_input_error(f"{object_name}: неизвестный вид вложенности '{kind}' у '{owner}'")
         return False
@@ -758,6 +983,56 @@ def validate_right_name(object_name, right_name):
     return True
 
 
+def finish_rights(obj_name, rights_map, rights_order):
+    """Замыкание включенных прав и канонический порядок выдачи.
+
+    Замыкание применяется только к объектам верхнего уровня с замеренным набором прав:
+    у вложенных видов платформа зависимостей не дописывает (замер 8.3.27).
+    """
+    object_type = get_object_type(obj_name)
+    if not is_nested_object(obj_name) and object_type in KNOWN_RIGHTS:
+        enabled = [r for r in rights_order if rights_map[r]['Value'] == 'true']
+        closed = close_rights(object_type, enabled)
+        for r in closed:
+            if r not in rights_map:
+                rights_order.append(r)
+                rights_map[r] = {'Value': 'true', 'Condition': None}
+        for r in rights_order:
+            if rights_map[r]['Value'] == 'false' and r in closed:
+                holders = sorted(p for p in closed
+                                 if p != r and r in impl_for(object_type, p))
+                print(f"WARNING: {obj_name}: право '{r}' выключено явно, но право "
+                      f"{'/'.join(holders)} требует его включенным - платформа отбросит "
+                      f"весь блок объекта при загрузке", file=sys.stderr)
+    rights_order.sort(key=right_sort_key)
+    return [{'Name': k, 'Value': rights_map[k]['Value'], 'Condition': rights_map[k]['Condition']}
+            for k in rights_order]
+
+
+def filter_nested_defaults(parsed_objects, set_for_attributes_by_default):
+    """Убирает вложенные права, которые выгрузка платформы не содержит.
+
+    Замер 8.3.27: право View или Edit реквизита, табличной части или стандартного
+    реквизита, измерения и ресурса регистра остается, только если не совпадает с
+    setForAttributesByDefault. Право стандартного реквизита с условием остается всегда.
+    Пустой блок объекта не пишется.
+    """
+    kept_objects = []
+    for obj in parsed_objects:
+        name = obj['Name']
+        if not is_nested_object(name):
+            kept_objects.append(obj)
+            continue
+        rights = [
+            right for right in close_nested_view_edit(name, obj['Rights'], set_for_attributes_by_default)
+            if nested_default_right_kept(
+                name, right['Name'], right['Value'], set_for_attributes_by_default, right.get('Condition'))
+        ]
+        if rights:
+            kept_objects.append({'Name': name, 'Rights': rights})
+    return kept_objects
+
+
 def parse_object_entry(entry):
     # --- String shorthand ---
     if isinstance(entry, str):
@@ -780,9 +1055,13 @@ def parse_object_entry(entry):
             for r in right_names:
                 validate_right_name(obj_name, r)
 
-        rights = []
+        rights_map = {}
+        rights_order = []
         for r in right_names:
-            rights.append({'Name': r, 'Value': 'true', 'Condition': None})
+            if r not in rights_map:
+                rights_order.append(r)
+            rights_map[r] = {'Value': 'true', 'Condition': None}
+        rights = finish_rights(obj_name, rights_map, rights_order)
         return {'Name': obj_name, 'Rights': rights}
 
     # --- Object form ---
@@ -826,24 +1105,22 @@ def parse_object_entry(entry):
                     rights_order.append(r_name)
                 rights_map[r_name] = {'Value': bool_val, 'Condition': None}
 
-    # 3) Apply RLS conditions
+    # Convert to array (замыкание включенных прав + канонический порядок)
+    rights = finish_rights(obj_name, rights_map, rights_order)
+
+    # 3) Apply RLS conditions - после замыкания: право, добавленное замыканием, тоже получает условие
     if entry.get('rls'):
+        by_name = {r['Name']: r for r in rights}
+        rls_kind = obj_name.split('.')[-2] if is_nested_object(obj_name) else None
         for p_name, p_value in entry['rls'].items():
             rls_right = translate_right_name(p_name)
-            if rls_right in rights_map:
-                rights_map[rls_right]['Condition'] = str(p_value)
+            if rls_kind in NESTED_CONDITION_DROPPED_KINDS:
+                print(f"WARNING: {obj_name}: платформа не хранит условие ограничения доступа у вида "
+                      f"'{rls_kind}', условие на '{rls_right}' не записано", file=sys.stderr)
+            elif rls_right in by_name:
+                by_name[rls_right]['Condition'] = str(p_value)
             else:
                 print(f"WARNING: {obj_name}: RLS for '{rls_right}' but this right is not in the rights list", file=sys.stderr)
-
-    # Convert to array
-    rights = []
-    for k in rights_order:
-        rights.append({
-            'Name': k,
-            'Value': rights_map[k]['Value'],
-            'Condition': rights_map[k]['Condition'],
-        })
-
     return {'Name': obj_name, 'Rights': rights}
 
 
@@ -963,10 +1240,16 @@ def main():
                  'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
                  f'xsi:type="Rights" version="{format_version}">')
 
-    # Global flags
-    sfno = str(defn['setForNewObjects']).lower() if defn.get('setForNewObjects') is not None else 'false'
+    # Global flags. У роли ПолныеПрава и FullAccess флажок новых объектов по умолчанию включен.
+    if defn.get('setForNewObjects') is not None:
+        sfno = str(defn['setForNewObjects']).lower()
+    elif role_name in ('ПолныеПрава', 'FullAccess'):
+        sfno = 'true'
+    else:
+        sfno = 'false'
     sfab = str(defn['setForAttributesByDefault']).lower() if defn.get('setForAttributesByDefault') is not None else 'true'
     irco = str(defn['independentRightsOfChildObjects']).lower() if defn.get('independentRightsOfChildObjects') is not None else 'false'
+    parsed_objects = filter_nested_defaults(parsed_objects, sfab == 'true')
 
     lines.append(f'	<setForNewObjects>{sfno}</setForNewObjects>')
     lines.append(f'	<setForAttributesByDefault>{sfab}</setForAttributesByDefault>')
