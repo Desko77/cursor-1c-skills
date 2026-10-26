@@ -1,6 +1,131 @@
 # История версий
 
-## Обновление плагина AI-EDT до 0.2.56 - 2026-09-29
+## 1.13.0 - 2026-10-26
+
+[Релиз v1.13.0](https://github.com/Desko77/cursor-1c-skills/releases/tag/v1.13.0)
+
+### Правила
+
+Правил 49: новые девять загружаются по совпадению путей и не входят в постоянный контекст.
+
+- `edt-known-errors`: известные ошибки EDT при записи метаданных, NPE при деплое, реструктуризация БД,
+  кеш `rphost`, обновление основной конфигурации из хранилища, `clean_project` и `revalidate_objects`
+  на конфигурации в тысячи объектов. Грузится по `.mdo`, `.form`, `.dcs`, `Schedule.schedule`, `DT-INF`.
+- `edt-thick-client-monopoly`: пакетный Конфигуратор против базы, открытой в EDT; операции толстого
+  клиента только инструментами `ai-edt`; сборка `.cf`/`.cfe` после `update_database`; маршрут проекта
+  расширения через родительскую конфигурацию.
+- `1c-skd-specifics`: подстановка `{ГДЕ}` во временные таблицы, `{ВЫБРАТЬ}` по реальным именам, типы
+  полей `DataSetObject`, условное оформление, скрытие строк табличного документа, отчет в новой вкладке.
+- `1c-managed-forms-specifics`: доработка типовой формы в расширении программно, аннотации после
+  дизайнера EDT, динамический список, `footerDataPath`, `DefaultPicture`, реквизит формы как серверный кеш.
+- `1c-query-specifics`: `ОБЪЕДИНИТЬ` со строками в Конфигураторе, декартово произведение в
+  `ПОЛНОЕ СОЕДИНЕНИЕ`, регистр бухгалтерии с корреспонденцией, выполнение в три фазы, постраничная выборка.
+- `1c-extension-specifics`: `&Вместо` и неэкспортные функции, заимствование ссылочных типов, подписки
+  расширения, версионные формы, `FillValue xsi:nil` в XML-выгрузке `.epf` на 8.3.27.2214.
+- `1c-bsl-runtime-specifics`: ошибки выполнения, которых не видит статический анализ
+  (`ДополнительныеСвойства`, `ПрочитатьJSON`, привилегированный режим,
+  `УстановитьВремяОжиданияБлокировкиДанных`, блокировка по `Ссылка`), особенности ЗУП 3.x, ложные
+  замечания Напарника.
+- `1c-exchange-specifics`: пакеты XDTO расширения формата EnterpriseData, соответствия объектов
+  ссылкой, обмен НСИ по HTTP, `QueryProcessing` веб-сервиса `CPMDataExchange`.
+- `1c77-specifics`: коллекции 7.7, правка `.1s` из Python, JSON и HTTP из 7.7, миграция 7.7 -> УНФ.
+- `routine_assignment_ext_processor`: копия внешней обработки для фонового задания пишется в
+  `ФайловаяСистема.ОбщийКаталогВременныхФайлов()` вместо `ПолучитьИмяВременногоФайла()`.
+- `edt-zip-export-pitfalls`: `resync_to_disk` перезаписывает файл, исправленный на диске в обход модели.
+
+### Скилы
+
+- `1c-change-package`: поле `description` в YAML frontmatter заключено в кавычки.
+- `1c-form-compile`: повторная компиляция сохраняет непустой `Module.bsl` побайтово; заготовки
+  создаются только для отсутствующего или пустого модуля. Параметры и директива обработчиков
+  определяются событием формы, а не именем процедуры; неизвестное событие выводит предупреждение
+  без создания заготовки.
+- `1c-meta-edit`: многоязычные свойства, включая `Synonym`, записываются через
+  `v8:item/v8:lang/v8:content`; изменение одного языка сохраняет остальные языки.
+- `1c-meta-validate`: проверка структуры многоязычных свойств объекта и дочерних элементов;
+  непустой текст вместо `v8:item` и неполная пара `v8:lang`/`v8:content` считаются ошибкой.
+- `1c-meta-compile`, `1c-meta-edit`, `1c-meta-validate`: `HierarchyType` принимает
+  `HierarchyFoldersAndItems` и `HierarchyOfItems`; значение `HierarchyItemsOnly` отвергается.
+- `1c-rls-perf-connect` - подключение документа, справочника или регистра сведений, в том числе из
+  расширения, к ограничению доступа на уровне записей БСП в производительном варианте: регистрация
+  списка, текст ограничения через `ТИПЗНАЧЕНИЯ`, определяемые типы `ВладелецЗначенийКлючейДоступа`, тела
+  шаблонов в каждой роли, перестроение данных подъемом версии, ограничение журнала документов при
+  нечитаемом виде документа, диагностика по симптому. Маршрут добавлен в `1c-config-router`.
+- `composing-1c-queries`: текст запроса оформляется многострочно, в том числе для `validate_query` и
+  `execute_query`; условие на изменяемый во времени ресурс у `СрезПоследних` и `СрезПервых` ставится в
+  `ГДЕ`, а не в параметры.
+- `1c-db-*`, `1c-epf-build`, `1c-epf-dump`, `1c-storage-ops`, `1c-db-cfe-admin`: ожидание выхода процесса
+  платформы, а не его потомков (`crashpad_handler` платформы 8.5); потоки платформы пишутся в файлы и
+  выводятся блоком "Вывод платформы"; в ps1 платформа получает только свои три дескриптора.
+- `1c-cfe-patch-method`: перехват методов модуля общей формы - `ModulePath CommonForm.Имя` и путь
+  `CommonForms/Имя/Ext/Form/Module.bsl`; предупреждение, если у формы в расширении нет `Ext/Form.xml`.
+- `1c-cfe-diff`: модуль общей формы `CommonForms/Имя/Ext/Form/Module.bsl` в обзоре расширения и в проверке
+  переноса `-Mode B`; перехваты событий и команд из `Ext/Form.xml` общей формы.
+- `1c-mxl-compile`: значения `parameter`, `detailParameter` ячейки и атрибут `faceName` шрифта пишутся с
+  экранированием XML; условие вида `Скидка <> 0` дает корректный макет.
+- `1c-skd-compile`: список значений параметра схемы пишется отдельным `<value>` на элемент, параметра
+  данных варианта - отдельным `<dcscor:value>` на элемент, в том числе в `dataParameters: "auto"`; краткая
+  запись принимает список через запятую, запятая внутри значения - в кавычках; `null` в списке дает
+  `xsi:nil`.
+- `1c-meta-compile`, `1c-meta-edit`, `1c-meta-validate`: `FillChecking` принимает `DontCheck` и
+  `ShowError`, `RegisterRecordsWritingOnPost` - `WriteModified` и `WriteSelected`;
+  `DependenceOnCalculationTypes` принимает `OnRegistrationPeriod`.
+- `1c-meta-compile`: `fillChecking` и `indexing` реквизита, `indexing` графы и реквизита адресации,
+  `parameterUseMode`, `representation`, `onMainServerUnavalableBehavior` команды, `taskNumberAutoPrefix`,
+  `httpMethod`, `direction` параметра операции и `use` состава общего реквизита проверяются по списку
+  допустимых значений; синоним и значение в другом регистре приводятся к каноническому, значение вне
+  списка дает ошибку.
+
+- `report-issue`, скрипт `issue-draft` (PowerShell и Python): находками считаются также секреты под ключом
+  в кавычках (`"password":"..."`), токены с дефисами (`sk-proj-...`, `sk-ant-...`), `bearer` в любом
+  регистре, абсолютные POSIX-пути (`/srv/...`, `/mnt/...`) и адреса IPv6; `::` и `::1` находкой не
+  считаются.
+
+### AI-EDT 0.2.59 и 0.2.60
+
+- `ordinary_forms`: 24 операции чтения, создания, импорта и изменения обычных форм в `Form.oform`;
+  `inspect_layout` с находками и покрытием, стандартные инструменты модуля, явный маршрут
+  `create_form formType=ORDINARY`, запрет изменяющих операций вместе с `dryRun` в пресетах
+  с запретом записи. Каталог аргументов - `skills/ai-edt-tools/references/ordinary-forms.md`.
+
+- `diagnostics`: `save_baseline`, `clear_baseline`, `get_project_errors sinceBaseline=true` и счетчик `resolvedSinceBaseline`; правило диагностики различает новые находки и полный список ошибок проекта.
+- `edit_metadata`: `listMode` для изменения состава типов, `group` команды объекта, XSD string по умолчанию у операций веб-сервиса, `inputByString` при создании справочника и документа; хранимый составной тип со строкой требует длину.
+- `set_object_property`: локализованные представления существующих объектов, списков и записей регистров, пояснения; строка в язык по умолчанию или JSON-карта языков, предпросмотр итоговой карты через `dryRun`.
+- `dependency_graph`: вызовы по строковому имени, `resolution`, `sites`, `count`, связи заданий и подписок с обработчиками, пустой `edgeKinds`. `find_dead_code` учитывает вызовы вне фильтра кандидатов и сообщает неполноту обхода.
+- `yaxunit_tests`: продолжение по тому же `runKey`, срок ответа, окна EDT, отчет текущего запуска и сверка имен из `modules` и `tests` с результатом.
+- `write_module_source`: проверка раскладки нового файлового модуля, `unchanged:true` для совпавшего содержимого синхронизированного файла. `validate_query` сводит диагностики расширения и основной конфигурации по позиции и области запроса.
+- `read_event_log excludeEvents`, предпросмотр всех операций `tag_admin`, чтение и справка конструкторов при блокировке записи, проверка активной синхронизации перед обновлением базы.
+- `export_object`: существующий каталог назначения, временный файл своего запуска, сохранение прежнего файла при ошибке сборки до финального размещения. MXL: объявленная высота и размер набора колонок соответствуют содержимому, `read_template` возвращает `rowCount`/`colCount`; операции строк возвращают `lastRow` и `appendRow`. Статусы заданий сохраняют последний шаг и результат-отказ.
+- Справка: `cluster_admin` для кластеров навигатора и размещения объектов, поля `/health`, измеренные размеры `ai_context` и `read_module_source`, подсказки при отсутствующем `featurePath` и недоступном XDTO API.
+
+### AI-EDT 0.2.58
+
+Изменилась работа плагина, набор `ai-edt-tools` и правило `mcp-tool-priority` обновлены под нее.
+
+- `tag_admin` - запись меток метаданных (`.settings/aiedt-markers.yaml`): `create_tag`, `update_tag` (переименование переносит назначения, ответ называет `movedAssignments`), `delete_tag` (`dryRun=true` отвечает число назначений без записи), `assign_tag` (вложенные адреса разбираются по парам вид-имя, список пишется одной записью), `unassign_tag`. Чтение меток остается в `workspace_marks`; нечитаемый файл у `get_tags` / `get_objects_by_tags` отвечает ошибкой, а не пустым списком, `get_bookmarks` - структурным отказом.
+- `mxl_workshop`: `insert_rows`, `delete_rows`, `copy_rows`, `insert_columns`, `delete_columns`, `copy_columns` - строки и столбцы целиком со сдвигом объединений, именованных областей, групп и рисунков, растягиванием тех, куда попала точка вставки, и `formatFrom` для формата новых строк и столбцов. Запись при неготовом проекте отказывает той же фразой готовности, расхождение модели и `Template.mxlx` - `templateModelFileMismatch`, неразрешающаяся ссылка картинки - отказ до записи (`unresolvedPictureRefs`); `create_template` создает общий макет с пустым `Template.mxlx`.
+- Формы: `set_excluded_commands` убирает стандартные команды из интерфейса команд объекта формы (`mode` replace / add / remove, имена сверяются с `getCommands()` объекта), `get_form_structure` отдает `excludedCommands`; `create_form` с `setAsDefault` у отчета и обработки пишет единый слот `defaultForm`, созданная командная панель отражается тегом `autoCommandBarAdded`; `create_object` с `objectType=CommonTemplate` ставит `SpreadsheetDocument` и создает пустой `Template.mxlx`.
+- Пресеты: пишущие операции `edit_metadata` / `edit_form` / `dcs_workshop` / `mxl_workshop` / `xdto_workshop` / `external_object_workshop` / `external_data_source_workshop` гасятся каждая своей дверью (`presetBlocked` у батча); `create_launch_config`, `branch_infobase`, `import_configuration_from_binary` и `create_project` выключены под Debug & Test; запуск с явным `updateBeforeLaunch=true` под пресетом без `update_database` отказывает до обновления и запуска, без довода - запуск без обновления с `databaseUpdate=SKIPPED_BY_PRESET`.
+- `git`: `delete_merge_restore_point` удаляет точку по обязательному `pointId`, не трогая файлы проекта; `restore_merge_point` называет `unchangedFiles`, а при остановке на середине - `unrestoredFiles`, `cleanupFailures` и `refreshFailure`; записи гасятся пресетами также под именами `git_create_merge_restore_point` и `git_delete_merge_restore_point`.
+- `dependency_graph`: корень обхода задают `scope` или селекторы `objectFqn` / `moduleFqn` / `subsystemName`, ничего - весь проект; несуществующий корень отвечает `rootNotFound`, модуль без модели назван в `modulesUnloaded`; на уровне `modules` входящее ребро - любой вызов из индекса ссылок, исходящее - вызов вида `ИмяОбщегоМодуля.Метод(...)`.
+- `yaxunit_tests`: `installYaxunit=true` устанавливает движок и на обоих путях снимает с контрольным чтением безопасный режим и защиту от опасных действий (`yaxunitUnsafeMode=false` оставляет флаги нетронутыми).
+- Прочее: `read_event_log` принимает в `severity` буквы `I` / `W` / `E` / `N` и полные имена; `validate_for_export` находит пустую ссылку картинки `ref="v8ui:/"` проверкой `mxlx-empty-picture-ref`; `support_registry status` отвечает `onSupport = true` только при непустом списке поставщиков; `list_interceptors` не считает закомментированную аннотацию; `get_metadata_objects` разрешает язык синонима по коду и экранирует ячейки Markdown; `get_command_interface` принимает вложенный адрес подсистемы в обеих формах.
+
+### AI-EDT 0.2.57
+
+Изменилась работа плагина, набор `ai-edt-tools` обновлен под нее.
+
+- `naparnik` принимает 1С:Напарник 1.0.8 наряду с 1.0.7 (`supportedVersion: "1.0.7, 1.0.8"`); ответы `ask` не изменились.
+- `write_module_source` в режимах append, insertBefore и insertAfter отделяет вставленный целый метод пустой строкой; `diff_module` показывает все строки между изменениями и сообщает изменения вне методов.
+- `extension_lifecycle` передает `objectFqn` и `events` на шаге generateHandler; adopt со `status=Pending` опрашивается по `runKey` (сбой ожидания - `pollError`); `list_interceptors` находит аннотации и ключевые слова в любом регистре, включая кириллицу.
+- `dcs_workshop`: `itemPath` принимает форму имени (`Filter[Сумма]`); отчет `REMOVAL_IMPACT` называет пользовательские поля, связи удаленных наборов и значения параметров со ссылкой на удаленное; русские синонимы видов сравнения понимаются как английские литералы.
+- `update_database` при сбое записи копии дамп-инфо отвечает `infobaseChangeRecord`: какая запись осталась на диске и что из нее следует следующему инкрементальному обновлению.
+- `launch_debugger`: `pause` с `threadId` решает по состоянию этого потока, чужой поток - отказ `threadOfAnotherSession`; `replaceModuleSet` - замещающий пакет точек (`moduleNotResolved`, `noBreakpointSet`); `launch` на модальном вопросе EDT - Pending с `blockedByDialog` и `runKey`.
+- Формы: `beforeName` без учета регистра, промах - `warning`; занятый UI-поток - `uiBusy`, прерванная начатая работа - `outcomeUnknown`; `get_form_structure` - `truncated` только при отброшенном узле, `dynamicListsUnread` с причиной.
+- `get_metadata_details` добавляет `Support Mode`; `edit_metadata` на отказе стража отдает `hint` и структурный тег.
+- `get_profiling_results` обрезает строки модуля по весу; `project_metrics` видит отказ сканирования маркера; `get_content_assist` читает символ в кодировке самого файла модуля.
+
+### AI-EDT 0.2.56
 
 Изменилась работа плагина, набор `ai-edt-tools` и правило `mcp-tool-priority` обновлены под нее.
 

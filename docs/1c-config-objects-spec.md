@@ -558,7 +558,7 @@ Ext/                               # Расширение конфигураци
 |---|---|---|
 | `name` | атрибут | Имя стандартного реквизита |
 | `LinkByType` | элемент | Связь по типу (обычно пустой) |
-| `FillChecking` | enum | `DontCheck` \| `ShowWarning` \| `ShowError` |
+| `FillChecking` | enum | `DontCheck` \| `ShowError` |
 | `MultiLine` | boolean | Многострочное поле |
 | `FillFromFillingValue` | boolean | Заполнять из значения заполнения |
 | `CreateOnInput` | enum | `Auto` \| `Use` \| `DontUse` |
@@ -884,7 +884,7 @@ XML-элемент: `<Catalog>`. Категория InternalInfo: CatalogObject,
 
 ```xml
 <Hierarchical>true</Hierarchical>
-<HierarchyType>HierarchyFoldersAndItems</HierarchyType>  <!-- HierarchyFoldersAndItems | HierarchyItemsOnly -->
+<HierarchyType>HierarchyFoldersAndItems</HierarchyType>  <!-- HierarchyFoldersAndItems | HierarchyOfItems -->
 <LimitLevelCount>true</LimitLevelCount>
 <LevelCount>3</LevelCount>
 <FoldersOnTop>true</FoldersOnTop>
@@ -976,7 +976,7 @@ XML-элемент: `<Document>`. Категория InternalInfo: DocumentObjec
     <xr:Item xsi:type="xr:MDObjectRef">AccountingRegister.Хозрасчетный</xr:Item>
 </RegisterRecords>
 <RegisterRecordsDeletion>AutoDeleteOnUnpost</RegisterRecordsDeletion>   <!-- AutoDeleteOnUnpost | AutoDeleteOff -->
-<RegisterRecordsWritingOnPost>WriteSelected</RegisterRecordsWritingOnPost>  <!-- WriteSelected | WriteAll -->
+<RegisterRecordsWritingOnPost>WriteSelected</RegisterRecordsWritingOnPost>  <!-- WriteSelected | WriteModified -->
 <SequenceFilling>AutoFill</SequenceFilling>                              <!-- AutoFill | AutoFillOff -->
 ```
 
