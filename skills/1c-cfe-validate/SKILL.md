@@ -20,6 +20,6 @@ description: "Валидация расширения конфигурации 1
 ## Команда
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-cfe-validate/scripts/cfe-validate.ps1 -ExtensionPath "src"
-powershell.exe -NoProfile -File skills/1c-cfe-validate/scripts/cfe-validate.ps1 -ExtensionPath "src/Configuration.xml"
+pwsh -NoProfile -File skills/1c-cfe-validate/scripts/cfe-validate.ps1 -ExtensionPath "src"
+pwsh -NoProfile -File skills/1c-cfe-validate/scripts/cfe-validate.ps1 -ExtensionPath "src/Configuration.xml"
 ```

@@ -18,7 +18,7 @@ description: "Анализ структуры объекта метаданны�
 | `OutFile` | Записать результат в файл (UTF-8 BOM) |
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-meta-info/scripts/meta-info.ps1 -ObjectPath "<путь>"
+pwsh -NoProfile -File skills/1c-meta-info/scripts/meta-info.ps1 -ObjectPath "<путь>"
 ```
 
 ## Три режима

@@ -24,7 +24,7 @@ description: "Создание информационной базы 1С. Исп
 ## Команда
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-db-create/scripts/db-create.ps1 <параметры>
+pwsh -NoProfile -File skills/1c-db-create/scripts/db-create.ps1 <параметры>
 ```
 
 ### Параметры скрипта
@@ -61,16 +61,16 @@ powershell.exe -NoProfile -File skills/1c-db-create/scripts/db-create.ps1 <па�
 
 ```powershell
 # Создать файловую базу
-powershell.exe -NoProfile -File skills/1c-db-create/scripts/db-create.ps1 -InfoBasePath "C:\Bases\NewDB"
+pwsh -NoProfile -File skills/1c-db-create/scripts/db-create.ps1 -InfoBasePath "C:\Bases\NewDB"
 
 # Создать серверную базу
-powershell.exe -NoProfile -File skills/1c-db-create/scripts/db-create.ps1 -InfoBaseServer "srv01" -InfoBaseRef "MyApp_Test"
+pwsh -NoProfile -File skills/1c-db-create/scripts/db-create.ps1 -InfoBaseServer "srv01" -InfoBaseRef "MyApp_Test"
 
 # Создать из шаблона CF
-powershell.exe -NoProfile -File skills/1c-db-create/scripts/db-create.ps1 -InfoBasePath "C:\Bases\NewDB" -UseTemplate "C:\Templates\config.cf"
+pwsh -NoProfile -File skills/1c-db-create/scripts/db-create.ps1 -InfoBasePath "C:\Bases\NewDB" -UseTemplate "C:\Templates\config.cf"
 
 # Создать и добавить в список баз
-powershell.exe -NoProfile -File skills/1c-db-create/scripts/db-create.ps1 -InfoBasePath "C:\Bases\NewDB" -AddToList -ListName "Новая база"
+pwsh -NoProfile -File skills/1c-db-create/scripts/db-create.ps1 -InfoBasePath "C:\Bases\NewDB" -AddToList -ListName "Новая база"
 ```
 
 ## Дополнительные аргументы платформы

@@ -24,7 +24,7 @@ description: "Добавить управляемую форму к внешне
 ## Команда
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-epf-add-form/scripts/add-form.ps1 -ProcessorName "<ProcessorName>" -FormName "<FormName>" [-Synonym "<Synonym>"] [-Main] [-SrcDir "<SrcDir>"]
+pwsh -NoProfile -File skills/1c-epf-add-form/scripts/add-form.ps1 -ProcessorName "<ProcessorName>" -FormName "<FormName>" [-Synonym "<Synonym>"] [-Main] [-SrcDir "<SrcDir>"]
 ```
 
 ## Что создается

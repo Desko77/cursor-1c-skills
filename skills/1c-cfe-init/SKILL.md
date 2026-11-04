@@ -39,7 +39,7 @@ description: "Создать расширение конфигурации 1С (
 ## Команда
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-cfe-init/scripts/cfe-init.ps1 -Name "МоеРасширение"
+pwsh -NoProfile -File skills/1c-cfe-init/scripts/cfe-init.ps1 -Name "МоеРасширение"
 ```
 
 ## Примеры

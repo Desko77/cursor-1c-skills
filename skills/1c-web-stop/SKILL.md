@@ -21,7 +21,7 @@ description: "Остановка Apache HTTP Server. Используй когд
 ## Команда
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-web-stop/scripts/web-stop.ps1 <параметры>
+pwsh -NoProfile -File skills/1c-web-stop/scripts/web-stop.ps1 <параметры>
 ```
 
 ### Параметры скрипта
@@ -40,8 +40,8 @@ powershell.exe -NoProfile -File skills/1c-web-stop/scripts/web-stop.ps1 <пар�
 
 ```powershell
 # Остановить Apache
-powershell.exe -NoProfile -File skills/1c-web-stop/scripts/web-stop.ps1
+pwsh -NoProfile -File skills/1c-web-stop/scripts/web-stop.ps1
 
 # С указанием пути
-powershell.exe -NoProfile -File skills/1c-web-stop/scripts/web-stop.ps1 -ApachePath "C:\tools\apache24"
+pwsh -NoProfile -File skills/1c-web-stop/scripts/web-stop.ps1 -ApachePath "C:\tools\apache24"
 ```

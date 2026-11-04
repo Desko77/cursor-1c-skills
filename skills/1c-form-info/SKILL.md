@@ -10,7 +10,7 @@ description: "Анализ структуры управляемой формы 
 ## Команда
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-form-info/scripts/form-info.ps1 -FormPath "<путь к Form.xml>"
+pwsh -NoProfile -File skills/1c-form-info/scripts/form-info.ps1 -FormPath "<путь к Form.xml>"
 ```
 
 ## Параметры

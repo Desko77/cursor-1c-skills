@@ -19,6 +19,6 @@ description: "Валидация конфигурации 1С. Использу�
 ## Команда
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-cf-validate/scripts/cf-validate.ps1 -ConfigPath "upload/cfempty"
-powershell.exe -NoProfile -File skills/1c-cf-validate/scripts/cf-validate.ps1 -ConfigPath "upload/cfempty/Configuration.xml"
+pwsh -NoProfile -File skills/1c-cf-validate/scripts/cf-validate.ps1 -ConfigPath "upload/cfempty"
+pwsh -NoProfile -File skills/1c-cf-validate/scripts/cf-validate.ps1 -ConfigPath "upload/cfempty/Configuration.xml"
 ```

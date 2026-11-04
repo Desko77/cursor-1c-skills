@@ -23,7 +23,7 @@ description: "Создать пустой внешний отчет 1С (scaffol
 ## Команда
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-erf-init/scripts/init.ps1 -Name "<Name>" [-Synonym "<Synonym>"] [-SrcDir "<SrcDir>"] [-WithSKD]
+pwsh -NoProfile -File skills/1c-erf-init/scripts/init.ps1 -Name "<Name>" [-Synonym "<Synonym>"] [-SrcDir "<SrcDir>"] [-WithSKD]
 ```
 
 ## Дальнейшие шаги

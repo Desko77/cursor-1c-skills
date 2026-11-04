@@ -23,7 +23,7 @@ description: "Создание пакета XDTO 1С из XML-схемы (XSD). 
 | `Force` | нет | Перезаписать существующий пакет. Без него навык откажется затирать уже собранный пакет |
 
 ```powershell
-powershell.exe -NoProfile -File "${CLAUDE_SKILL_DIR}/scripts/xdto-compile.ps1" -XsdPath "<схема.xsd>" -OutputDir "<каталог-исходников>"
+pwsh -NoProfile -File "${CLAUDE_SKILL_DIR}/scripts/xdto-compile.ps1" -XsdPath "<схема.xsd>" -OutputDir "<каталог-исходников>"
 ```
 
 Примеры:

@@ -22,7 +22,7 @@ description: "Удалить макет из объекта 1С (обработ�
 ## Команда
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-template-remove/scripts/remove-template.ps1 -ObjectName "<ObjectName>" -TemplateName "<TemplateName>" [-SrcDir "<SrcDir>"]
+pwsh -NoProfile -File skills/1c-template-remove/scripts/remove-template.ps1 -ObjectName "<ObjectName>" -TemplateName "<TemplateName>" [-SrcDir "<SrcDir>"]
 ```
 
 ## Что удаляется

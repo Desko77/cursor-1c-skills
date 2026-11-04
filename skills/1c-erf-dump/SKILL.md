@@ -35,7 +35,7 @@ description: "Разобрать ERF-файл отчета 1С в XML-исход
 Используй общий скрипт из epf-dump:
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-epf-dump/scripts/epf-dump.ps1 <параметры>
+pwsh -NoProfile -File skills/1c-epf-dump/scripts/epf-dump.ps1 <параметры>
 ```
 
 ### Параметры скрипта
@@ -58,8 +58,8 @@ powershell.exe -NoProfile -File skills/1c-epf-dump/scripts/epf-dump.ps1 <пар�
 
 ```powershell
 # Разборка отчета (файловая база)
-powershell.exe -NoProfile -File skills/1c-epf-dump/scripts/epf-dump.ps1 -InfoBasePath "C:\Bases\MyDB" -InputFile "build/МойОтчет.erf" -OutputDir "src"
+pwsh -NoProfile -File skills/1c-epf-dump/scripts/epf-dump.ps1 -InfoBasePath "C:\Bases\MyDB" -InputFile "build/МойОтчет.erf" -OutputDir "src"
 
 # Серверная база
-powershell.exe -NoProfile -File skills/1c-epf-dump/scripts/epf-dump.ps1 -InfoBaseServer "srv01" -InfoBaseRef "MyDB" -UserName "Admin" -Password "secret" -InputFile "build/МойОтчет.erf" -OutputDir "src"
+pwsh -NoProfile -File skills/1c-epf-dump/scripts/epf-dump.ps1 -InfoBaseServer "srv01" -InfoBaseRef "MyDB" -UserName "Admin" -Password "secret" -InputFile "build/МойОтчет.erf" -OutputDir "src"
 ```

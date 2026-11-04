@@ -31,7 +31,7 @@ description: "Загрузка конфигурации 1С из CF-файла. 
 ## Команда
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-db-load-cf/scripts/db-load-cf.ps1 <параметры>
+pwsh -NoProfile -File skills/1c-db-load-cf/scripts/db-load-cf.ps1 <параметры>
 ```
 
 ### Параметры скрипта
@@ -68,11 +68,11 @@ powershell.exe -NoProfile -File skills/1c-db-load-cf/scripts/db-load-cf.ps1 <п�
 
 ```powershell
 # Файловая база
-powershell.exe -NoProfile -File skills/1c-db-load-cf/scripts/db-load-cf.ps1 -InfoBasePath "C:\Bases\MyDB" -UserName "Admin" -InputFile "C:\backup\config.cf"
+pwsh -NoProfile -File skills/1c-db-load-cf/scripts/db-load-cf.ps1 -InfoBasePath "C:\Bases\MyDB" -UserName "Admin" -InputFile "C:\backup\config.cf"
 
 # Серверная база
-powershell.exe -NoProfile -File skills/1c-db-load-cf/scripts/db-load-cf.ps1 -InfoBaseServer "srv01" -InfoBaseRef "MyApp_Test" -UserName "Admin" -Password "secret" -InputFile "config.cf"
+pwsh -NoProfile -File skills/1c-db-load-cf/scripts/db-load-cf.ps1 -InfoBaseServer "srv01" -InfoBaseRef "MyApp_Test" -UserName "Admin" -Password "secret" -InputFile "config.cf"
 
 # Загрузка расширения
-powershell.exe -NoProfile -File skills/1c-db-load-cf/scripts/db-load-cf.ps1 -InfoBasePath "C:\Bases\MyDB" -UserName "Admin" -InputFile "ext.cfe" -Extension "МоеРасширение"
+pwsh -NoProfile -File skills/1c-db-load-cf/scripts/db-load-cf.ps1 -InfoBasePath "C:\Bases\MyDB" -UserName "Admin" -InputFile "ext.cfe" -Extension "МоеРасширение"
 ```

@@ -25,7 +25,7 @@ description: "Декомпиляция управляемой формы 1С (Fo
 ## Команда
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-form-decompile/scripts/form-decompile.ps1 -InputFile "<путь>/Form.xml" [-OutputFile "<путь>.json"]
+pwsh -NoProfile -File skills/1c-form-decompile/scripts/form-decompile.ps1 -InputFile "<путь>/Form.xml" [-OutputFile "<путь>.json"]
 ```
 
 Альтернатива (Python, тот же алгоритм):
@@ -79,13 +79,13 @@ python skills/1c-form-decompile/scripts/form-decompile.py -InputFile "<путь>
 Декомпиляция с выводом рядом с исходником (получится `Form.form.json`):
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-form-decompile/scripts/form-decompile.ps1 -InputFile "src/DataProcessors/Загрузка/Forms/Форма/Ext/Form.xml"
+pwsh -NoProfile -File skills/1c-form-decompile/scripts/form-decompile.ps1 -InputFile "src/DataProcessors/Загрузка/Forms/Форма/Ext/Form.xml"
 ```
 
 Декомпиляция в явный файл:
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-form-decompile/scripts/form-decompile.ps1 -InputFile "C:/dump/Форма/Ext/Form.xml" -OutputFile "C:/work/форма-черновик.json"
+pwsh -NoProfile -File skills/1c-form-decompile/scripts/form-decompile.ps1 -InputFile "C:/dump/Форма/Ext/Form.xml" -OutputFile "C:/work/форма-черновик.json"
 ```
 
 ## JSON-схема DSL

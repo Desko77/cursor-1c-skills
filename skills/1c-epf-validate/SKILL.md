@@ -19,7 +19,7 @@ description: "Валидация внешней обработки 1С (EPF). И
 ## Команда
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-epf-validate/scripts/epf-validate.ps1 -ObjectPath "src/МояОбработка"
-powershell.exe -NoProfile -File skills/1c-epf-validate/scripts/epf-validate.ps1 -ObjectPath "src/МояОбработка/МояОбработка.xml"
+pwsh -NoProfile -File skills/1c-epf-validate/scripts/epf-validate.ps1 -ObjectPath "src/МояОбработка"
+pwsh -NoProfile -File skills/1c-epf-validate/scripts/epf-validate.ps1 -ObjectPath "src/МояОбработка/МояОбработка.xml"
 ```
 

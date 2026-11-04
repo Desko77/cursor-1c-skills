@@ -24,7 +24,7 @@ description: "Добавить управляемую форму к объект
 ## Команда
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-form-add/scripts/form-add.ps1 -ObjectPath "<ObjectPath>" -FormName "<FormName>" [-Purpose "<Purpose>"] [-Synonym "<Synonym>"] [-SetDefault]
+pwsh -NoProfile -File skills/1c-form-add/scripts/form-add.ps1 -ObjectPath "<ObjectPath>" -FormName "<FormName>" [-Purpose "<Purpose>"] [-Synonym "<Synonym>"] [-SetDefault]
 ```
 
 ## Purpose - назначение формы

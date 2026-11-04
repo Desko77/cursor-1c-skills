@@ -18,7 +18,7 @@ description: "Анализ структуры подсистемы 1С из XML-
 | `OutFile` | Записать результат в файл (UTF-8 BOM) |
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-subsystem-info/scripts/subsystem-info.ps1 -SubsystemPath "<путь>"
+pwsh -NoProfile -File skills/1c-subsystem-info/scripts/subsystem-info.ps1 -SubsystemPath "<путь>"
 ```
 
 ## Пять режимов

@@ -22,7 +22,7 @@ description: "Точечное редактирование пакета XDTO 1�
 | `NoValidate` | нет | Не запускать `1c-xdto-validate` после правки |
 
 ```powershell
-powershell.exe -NoProfile -File "${CLAUDE_SKILL_DIR}/scripts/xdto-edit.ps1" -PackagePath "<путь>" -Operation <op> -Target "<адрес>" -Value "<значение>"
+pwsh -NoProfile -File "${CLAUDE_SKILL_DIR}/scripts/xdto-edit.ps1" -PackagePath "<путь>" -Operation <op> -Target "<адрес>" -Value "<значение>"
 ```
 
 ## Операции

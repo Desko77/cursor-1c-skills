@@ -20,8 +20,8 @@ description: "Валидация подсистемы 1С. Используй п
 ## Команда
 
 ```powershell
-powershell.exe -NoProfile -File "skills/1c-subsystem-validate/scripts/subsystem-validate.ps1" -SubsystemPath "Subsystems/Продажи"
-powershell.exe -NoProfile -File "skills/1c-subsystem-validate/scripts/subsystem-validate.ps1" -SubsystemPath "Subsystems/Продажи.xml"
+pwsh -NoProfile -File "skills/1c-subsystem-validate/scripts/subsystem-validate.ps1" -SubsystemPath "Subsystems/Продажи"
+pwsh -NoProfile -File "skills/1c-subsystem-validate/scripts/subsystem-validate.ps1" -SubsystemPath "Subsystems/Продажи.xml"
 ```
 
 ## Сверка состава с конфигурацией (проверка 14)

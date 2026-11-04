@@ -20,8 +20,8 @@ description: "Валидация схемы компоновки данных 1�
 ## Команда
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-skd-validate/scripts/skd-validate.ps1 -TemplatePath "src/МойОтчет/Templates/ОсновнаяСхема"
-powershell.exe -NoProfile -File skills/1c-skd-validate/scripts/skd-validate.ps1 -TemplatePath "Catalogs/Номенклатура/Templates/СКД/Ext/Template.xml"
+pwsh -NoProfile -File skills/1c-skd-validate/scripts/skd-validate.ps1 -TemplatePath "src/МойОтчет/Templates/ОсновнаяСхема"
+pwsh -NoProfile -File skills/1c-skd-validate/scripts/skd-validate.ps1 -TemplatePath "Catalogs/Номенклатура/Templates/СКД/Ext/Template.xml"
 ```
 
 ## Сверка наборов данных с конфигурацией

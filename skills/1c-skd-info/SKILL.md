@@ -20,7 +20,7 @@ description: "Анализ структуры схемы компоновки д
 | `OutFile` | Записать результат в файл (UTF-8 BOM) |
 
 ```powershell
-powershell.exe -NoProfile -File skills/1c-skd-info/scripts/skd-info.ps1 -TemplatePath "<путь>"
+pwsh -NoProfile -File skills/1c-skd-info/scripts/skd-info.ps1 -TemplatePath "<путь>"
 ```
 
 С указанием режима:
